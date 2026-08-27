@@ -1,20 +1,33 @@
-require("dotenv").config();
 const express = require("express");
-const cors = require("cors");
 const helmet = require("helmet");
+const cors = require("cors");
+
+const authRoutes = require("./modules/auth/auth.routes");
+const profileRoutes = require("./modules/profile/profile.routes");
+const driversRoutes = require("./modules/drivers/drivers.routes");
+
+const errorHandler = require("./middleware/errorHandler");
 
 const app = express();
 
-// Security headers (protects against some common attacks)
+app.set("trust proxy", 1); // needed for req.ip / rate-limit to see the real client IP behind a proxy/load balancer
+
 app.use(helmet());
 app.use(cors());
+app.use(express.json({ limit: "1mb" }));
 
-// Parses incoming JSON request bodies into req.body
-app.use(express.json());
+app.get("/health", (req, res) => res.status(200).json({ status: "ok" }));
 
-// A simple test route so we know the app works before adding real features
-app.get("/api/veteride/health", (req, res) => {
-  res.json({ success: true, data: { status: "ok" } });
+app.use("/auth", authRoutes);
+app.use("/me", profileRoutes);
+app.use("/drivers", driversRoutes);
+
+app.use((req, res) => {
+  res
+    .status(404)
+    .json({ error: { code: "NOT_FOUND", message: "Route not found" } });
 });
+
+app.use(errorHandler);
 
 module.exports = app;
