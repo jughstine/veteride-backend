@@ -50,4 +50,29 @@ module.exports = {
   },
 
   bcryptSaltRounds: parseInt(process.env.BCRYPT_SALT_ROUNDS || "12", 10),
+
+  rides: {
+    // How far dispatch looks for a driver. The app states this number to
+    // both sides ("bookings within 10 km"), so it is read from here rather
+    // than written twice.
+    offerRadiusKm: parseFloat(process.env.OFFER_RADIUS_KM || "10"),
+
+    // A request nobody accepts inside this window is cancelled by the
+    // system. Without it the open list fills with rides whose passengers
+    // gave up and walked.
+    requestTtlMinutes: parseInt(process.env.REQUEST_TTL_MIN || "15", 10),
+
+    // A fix older than this is not a position. A driver whose phone went
+    // to sleep an hour ago must not be offered a ride at their last known
+    // junction.
+    positionMaxAgeMinutes: parseInt(process.env.POSITION_MAX_AGE_MIN || "5", 10),
+
+    // How close the driver must be before the passenger is told they have
+    // arrived. Computed, not declared: there is no status for it.
+    atPickupMetres: parseInt(process.env.AT_PICKUP_METRES || "120", 10),
+
+    // Wrong PINs allowed before the handover is locked and the passenger
+    // has to be asked to re-read it.
+    pinAttempts: parseInt(process.env.PIN_ATTEMPTS || "5", 10),
+  },
 };

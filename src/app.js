@@ -5,6 +5,8 @@ const cors = require("cors");
 const authRoutes = require("./modules/auth/auth.routes");
 const profileRoutes = require("./modules/profile/profile.routes");
 const driversRoutes = require("./modules/drivers/drivers.routes");
+const tripsRoutes = require("./modules/trips/trips.routes");
+const streamRoutes = require("./realtime/stream.routes");
 
 const errorHandler = require("./middleware/errorHandler");
 
@@ -21,6 +23,8 @@ app.get("/health", (req, res) => res.status(200).json({ status: "ok" }));
 app.use("/auth", authRoutes);
 app.use("/me", profileRoutes);
 app.use("/drivers", driversRoutes);
+app.use("/trips", tripsRoutes);
+app.use("/stream", streamRoutes);
 
 app.use((req, res) => {
   res

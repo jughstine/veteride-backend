@@ -34,6 +34,14 @@ function validateParams(schema) {
 
 /**
  * Query params are strings; use z.coerce for numeric/boolean fields.
+ *
+ * The parsed result is written with defineProperty, not assignment. Express 5
+ * made `req.query` a getter with no setter, so `req.query = parsed` fails
+ * *silently* — no throw, no warning — and every handler downstream keeps
+ * reading the raw strings it thought had been coerced. That is quiet in a
+ * comparison ("14.6" - 0.09 is a number) and loud in an addition
+ * ("14.6" + 0.09 is "14.60.09"), so a validated numeric query can produce a
+ * WHERE clause that silently matches nothing.
  */
 function validateQuery(schema) {
   return (req, res, next) => {
@@ -44,7 +52,12 @@ function validateQuery(schema) {
         .join("; ");
       return next(new AppError(400, "VALIDATION_ERROR", detail));
     }
-    req.query = result.data;
+    Object.defineProperty(req, "query", {
+      value: result.data,
+      writable: true,
+      configurable: true,
+      enumerable: true,
+    });
     next();
   };
 }
