@@ -6,6 +6,7 @@ const authRoutes = require("./modules/auth/auth.routes");
 const profileRoutes = require("./modules/profile/profile.routes");
 const driversRoutes = require("./modules/drivers/drivers.routes");
 const tripsRoutes = require("./modules/trips/trips.routes");
+const uploadsRoutes = require("./modules/uploads/uploads.routes");
 const streamRoutes = require("./realtime/stream.routes");
 
 const errorHandler = require("./middleware/errorHandler");
@@ -24,6 +25,7 @@ app.use("/auth", authRoutes);
 app.use("/me", profileRoutes);
 app.use("/drivers", driversRoutes);
 app.use("/trips", tripsRoutes);
+app.use("/uploads", uploadsRoutes);
 app.use("/stream", streamRoutes);
 
 app.use((req, res) => {

@@ -1,3 +1,7 @@
 node_modules/
 .env
 *.log
+# Uploaded documents -- real people's licences. Never committed.
+# Anchored with a leading slash: a bare "uploads/" also matches
+# src/modules/uploads/, which would quietly drop the module itself.
+/uploads/

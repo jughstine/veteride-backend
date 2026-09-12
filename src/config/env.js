@@ -51,6 +51,18 @@ module.exports = {
 
   bcryptSaltRounds: parseInt(process.env.BCRYPT_SALT_ROUNDS || "12", 10),
 
+  uploads: {
+    // Where the bytes live. A path on disk in development; in production a
+    // mounted volume or object-storage mount, because a container's own
+    // filesystem is discarded on every redeploy and these are the documents
+    // a driver's approval depends on.
+    dir: process.env.UPLOAD_DIR || "./uploads",
+
+    // 8 MB. A phone photo of a licence is well under this; anything far over
+    // is a mistake or an attempt to fill the disk.
+    maxBytes: parseInt(process.env.UPLOAD_MAX_BYTES || String(8 * 1024 * 1024), 10),
+  },
+
   rides: {
     // How far dispatch looks for a driver. The app states this number to
     // both sides ("bookings within 10 km"), so it is read from here rather
