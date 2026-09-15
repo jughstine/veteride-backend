@@ -11,4 +11,17 @@ const submitVerificationDocumentsSchema = z.object({
   or_cr_photo_url: z.string().url(),
 });
 
-module.exports = { submitVerificationDocumentsSchema };
+/**
+ * The online switch has two positions, and a missing field is not a third
+ * one: anything that is not an affirmative is "offline". `true` is accepted
+ * in its three wire spellings because a toggle is posted by whatever client
+ * is to hand — the app, a console, curl — and being read as offline for
+ * having sent the string is a driver who believes they are working.
+ */
+const availabilitySchema = z.object({
+  online: z
+    .union([z.boolean(), z.literal("true"), z.literal("false"), z.literal(0), z.literal(1)])
+    .optional(),
+});
+
+module.exports = { submitVerificationDocumentsSchema, availabilitySchema };
