@@ -3,7 +3,14 @@ const logger = require("../utils/logger");
 
 function errorHandler(err, req, res, next) {
   if (err instanceof AppError) {
+    // The details go beside the error rather than inside it, because what
+    // they carry is a resource the client already knows how to read: a 409
+    // that refuses an accept hands back the trip this driver is actually
+    // on, and the app adopts it from the same `trip` key every successful
+    // reply uses. `error` is written last so a detail can never overwrite
+    // the reason for the refusal.
     return res.status(err.statusCode).json({
+      ...(err.details || {}),
       error: { code: err.code, message: err.message },
     });
   }

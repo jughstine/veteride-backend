@@ -12,4 +12,16 @@ const submitVerificationDocuments = asyncHandler(async (req, res) => {
   res.status(200).json(driver);
 });
 
-module.exports = { submitVerificationDocuments };
+// Anything that is not an affirmative is offline. A switch has two
+// positions, and a body that forgot to say which is not a third one.
+const setAvailability = asyncHandler(async (req, res) => {
+  const online =
+    req.body.online === true || req.body.online === "true" || req.body.online === 1;
+  res.status(200).json(await driverService.setAvailability(req.user.id, online));
+});
+
+const earnings = asyncHandler(async (req, res) => {
+  res.status(200).json({ earnings: await driverService.earnings(req.user.id) });
+});
+
+module.exports = { submitVerificationDocuments, setAvailability, earnings };

@@ -86,5 +86,22 @@ module.exports = {
     // Wrong PINs allowed before the handover is locked and the passenger
     // has to be asked to re-read it.
     pinAttempts: parseInt(process.env.PIN_ATTEMPTS || "5", 10),
+
+    // A ride that has not moved in this long is abandoned: a phone that
+    // died mid-trip, or a driver who closed the app on the way to a
+    // pickup. Hours rather than the minutes a request gets, because a long
+    // journey is a normal thing and cancelling one out from under two
+    // people is not. Without it an in_progress row nobody will ever finish
+    // holds its driver at 'on_trip' for ever, and they can never go online
+    // again.
+    liveTripMaxHours: parseInt(process.env.LIVE_TRIP_MAX_HOURS || "12", 10),
+
+    // The platform's cut of a fare, as a percentage.
+    //
+    // ZERO until the owner names a rate. Nothing in either schema records a
+    // commission split, and the reference backend refuses to invent one for
+    // the same reason this does: a percentage guessed here is read off the
+    // driver's dashboard as the money they actually lost.
+    commissionPercent: parseFloat(process.env.COMMISSION_PCT || "0"),
   },
 };

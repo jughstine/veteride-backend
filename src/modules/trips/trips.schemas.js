@@ -23,7 +23,23 @@ const bookSchema = z.object({
   // arrives as a numeric overflow rather than a readable 400.
   distance_km: z.number().min(0).max(9999.99).optional(),
   estimated_minutes: z.number().int().min(0).max(100000).optional(),
+  // The app's spelling of the same figure. Both are accepted because zod
+  // STRIPS what it does not declare and validate.js then replaces the body
+  // with the parsed result — so the estimate the passenger was shown was
+  // arriving here and being silently dropped on the way to the column,
+  // leaving every row with a NULL duration and every driver's card with no
+  // ETA on it.
+  estimated_duration_min: z.number().int().min(0).max(100000).optional(),
   estimated_fare: z.number().min(0).max(99999999.99).optional(),
+
+  // What the booking needs, and what the job is. Free text here and
+  // normalised in the service: the console types "SUV" and older builds of
+  // the app send their own service words, and one spelling table for all of
+  // them lives in modules/drivers/vehicle-class.js. An unrecognised class
+  // is refused there rather than defaulted, because a booking quietly
+  // turned into a motorcycle is a car the passenger will wait for for ever.
+  vehicle_class: z.string().trim().min(1).max(40).optional(),
+  service: z.string().trim().min(1).max(40).optional(),
 });
 
 const tripIdParams = z.object({ tripId });

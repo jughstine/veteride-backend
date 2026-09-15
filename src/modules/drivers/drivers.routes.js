@@ -26,4 +26,17 @@ router.post(
   tripsController.postPosition,
 );
 
+// Going online, and coming off. Separate from the position post above: a
+// driver who is not working still reports where they are when the app is
+// open, and a driver who is working is not online for as long as they have
+// somebody in the vehicle.
+router.post(
+  "/me/availability",
+  validateBody(schemas.availabilitySchema),
+  controller.setAvailability,
+);
+
+// What this driver earned, out of the rides they actually finished.
+router.get("/me/earnings", controller.earnings);
+
 module.exports = router;

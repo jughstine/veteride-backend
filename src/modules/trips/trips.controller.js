@@ -10,8 +10,10 @@ const book = asyncHandler(async (req, res) => {
     dropoffLat: req.body.dropoff_lat,
     dropoffLng: req.body.dropoff_lng,
     distanceKm: req.body.distance_km,
-    estimatedMinutes: req.body.estimated_minutes,
+    estimatedMinutes: req.body.estimated_duration_min ?? req.body.estimated_minutes,
     estimatedFare: req.body.estimated_fare,
+    vehicleClass: req.body.vehicle_class,
+    service: req.body.service,
   });
   res.status(201).json({ trip });
 });
@@ -27,13 +29,15 @@ const readOne = asyncHandler(async (req, res) => {
 });
 
 const openRequests = asyncHandler(async (req, res) => {
-  const requests = await tripService.openRequests(req.user.id, {
+  // An empty list is an answer — "nobody is booking" — and the driver's
+  // screen has to render it as one rather than as silence. `reason` is the
+  // other kind of empty: this driver cannot be offered anything at all, and
+  // needs to be told which of the two silences they are looking at.
+  const { requests, reason } = await tripService.openRequests(req.user.id, {
     lat: req.query.lat,
     lng: req.query.lng,
   });
-  // An empty list is an answer — "nobody is booking" — and the driver's
-  // screen has to render it as one rather than as silence.
-  res.status(200).json({ requests });
+  res.status(200).json({ requests, reason });
 });
 
 const accept = asyncHandler(async (req, res) => {
