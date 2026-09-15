@@ -143,10 +143,12 @@ async function earnings(driverId) {
 
     const gross = pesos(row?.gross);
     const commission = pesos((gross * env.rides.commissionPercent) / 100);
-    // No column anywhere records a tip, and none records a daily allowance.
-    // They are present and zero because the dashboard draws both; a figure
-    // put here would be one this server made up.
-    const tips = 0;
+    // What this driver's passengers actually added, out of the rating they
+    // left with it. Commission is taken on the fare and never on the tip.
+    const tips = pesos(row?.tips);
+    // Nothing records a daily allowance. It is present and zero because
+    // the dashboard draws a line for it; a figure put here would be one
+    // this server made up.
     const allowance = 0;
     const net = gross - commission + tips;
 

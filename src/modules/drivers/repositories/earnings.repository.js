@@ -38,12 +38,18 @@ async function weekWindow() {
  * `final_fare` is what the ride settled at and `estimated_fare` the figure
  * the passenger agreed to; completing a trip copies one into the other, so
  * the COALESCE only ever matters for a row written before that ran.
+ *
+ * Tips are summed beside the fares rather than added to them. They are the
+ * driver's in full — the platform takes no commission on a gift — so the
+ * dashboard has to be able to show the two apart, which is exactly what
+ * the "Tips kept" line on it does.
  */
 async function dailyTotals(driverId, weekStart) {
   const [rows] = await pool.query(
     `SELECT DATE_FORMAT(t.dropoff_at, '%Y-%m-%d') AS day,
             COUNT(*) AS trips_count,
-            SUM(COALESCE(t.final_fare, t.estimated_fare, 0)) AS gross
+            SUM(COALESCE(t.final_fare, t.estimated_fare, 0)) AS gross,
+            SUM(COALESCE(t.tip_amount, 0)) AS tips
        FROM trips t
       WHERE t.driver_id = :driverId
         AND t.status = 'completed'

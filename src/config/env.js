@@ -8,6 +8,22 @@ function required(name) {
   return value;
 }
 
+/**
+ * A tariff from two env vars, or null when either is missing.
+ *
+ * Null is the answer that keeps a price from being invented: a service
+ * whose rate nobody has named is refused at booking rather than billed at
+ * some other service's rate. Both halves are required together, because a
+ * base fare with no per-kilometre rate prices every journey the same.
+ */
+function optionalTariff(baseVar, perKmVar) {
+  const base = parseFloat(process.env[baseVar]);
+  const perKm = parseFloat(process.env[perKmVar]);
+  if (!Number.isFinite(base) || !Number.isFinite(perKm)) return null;
+  if (base < 0 || perKm < 0) return null;
+  return { base, perKm };
+}
+
 function requiredList(name) {
   const raw = required(name);
   const values = raw
@@ -96,12 +112,25 @@ module.exports = {
     // again.
     liveTripMaxHours: parseInt(process.env.LIVE_TRIP_MAX_HOURS || "12", 10),
 
+    // What a six-wheeler charges, as base fare and rate per kilometre.
+    //
+    // An OVERRIDE, not the default. The owner priced a truck as the car's
+    // tariff plus ₱20 on the base fare (15 Sep 2026), which modules/trips/
+    // fares.js derives from the car rate so the two move together — so this
+    // is null in the common case and a truck is still priced. Setting both
+    // TRUCK6_BASE_FARE and TRUCK6_PER_KM names a truck's own tariff outright
+    // and takes over from the derived one, for the day a load is costed on
+    // its own terms.
+    truck6Tariff: optionalTariff("TRUCK6_BASE_FARE", "TRUCK6_PER_KM"),
+
     // The platform's cut of a fare, as a percentage.
     //
-    // ZERO until the owner names a rate. Nothing in either schema records a
-    // commission split, and the reference backend refuses to invent one for
-    // the same reason this does: a percentage guessed here is read off the
-    // driver's dashboard as the money they actually lost.
-    commissionPercent: parseFloat(process.env.COMMISSION_PCT || "0"),
+    // TEN, the rate the owner named (15 Sep 2026): the platform keeps 10% of
+    // the fare and the driver earns the rest, and a tip is never part of it —
+    // a gift carries no commission. Still overridable with COMMISSION_PCT so
+    // the rate stays a setting and not a recompile, but no longer zero: a
+    // fare that split nothing was a driver's whole fare and a platform that
+    // ran for free, which is not the arrangement.
+    commissionPercent: parseFloat(process.env.COMMISSION_PCT || "10"),
   },
 };
