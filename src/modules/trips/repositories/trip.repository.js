@@ -9,6 +9,8 @@ const TRIP_COLUMNS = `
   t.distance_km, t.estimated_minutes, t.estimated_fare, t.final_fare,
   t.actual_duration_min,
   t.vehicle_class, t.service, t.vehicle_id,
+  t.payment_method,
+  t.rating, t.rating_comment, t.tip_amount, t.rated_at,
   t.pin, t.pin_attempts, t.pin_locked_at,
   t.cancelled_by, t.cancel_reason,
   t.requested_at, t.matched_at, t.pickup_at, t.dropoff_at, t.updated_at`;
@@ -32,7 +34,7 @@ async function create({
   pickupAddress, pickupLat, pickupLng,
   dropoffAddress, dropoffLat, dropoffLng,
   distanceKm, estimatedMinutes, estimatedFare,
-  vehicleClass, service,
+  vehicleClass, service, paymentMethod,
 }) {
   const tripId = crypto.randomUUID();
   await pool.query(
@@ -41,13 +43,13 @@ async function create({
        pickup_address, pickup_lat, pickup_lng,
        dropoff_address, dropoff_lat, dropoff_lng,
        distance_km, estimated_minutes, estimated_fare,
-       vehicle_class, service, pin
+       vehicle_class, service, payment_method, pin
      ) VALUES (
        :tripId, :userId, 'requested',
        :pickupAddress, :pickupLat, :pickupLng,
        :dropoffAddress, :dropoffLat, :dropoffLng,
        :distanceKm, :estimatedMinutes, :estimatedFare,
-       :vehicleClass, :service, :pin
+       :vehicleClass, :service, :paymentMethod, :pin
      )`,
     {
       tripId, userId,
@@ -60,6 +62,10 @@ async function create({
       // file; a booking that reached here has already been normalised.
       vehicleClass: vehicleClass || "motorcycle",
       service: service || "ride",
+      // Cash is the default the column carries, and it is the honest one:
+      // with no gateway anywhere in this API, a fare nobody named a method
+      // for is a fare handed to the driver.
+      paymentMethod: paymentMethod || "cash",
       pin: newPin(),
     },
   );
@@ -216,10 +222,20 @@ async function advance(tripId, { from, to, extra = {} }) {
     // How long it really took, stamped once. TIMESTAMPDIFF over pickup_at
     // rather than requested_at: the ride is the part the passenger was in
     // the vehicle for, and the wait for a driver is a different number.
+    // GREATEST(1, …) because a ride that took forty seconds took a minute;
+    // a receipt for zero minutes reads as a ride that never happened.
+    //
+    // The fare is the estimate and nothing else. estimated_fare is this
+    // server's own figure — modules/trips/fares.js priced it at booking
+    // from the tariff and the route, and no client number reaches this
+    // column — so copying it here is the agreed price becoming the charged
+    // one. The trailing 0 is for a row written before any of that existed:
+    // a completed ride with no fare at all cannot be receipted.
     completed:
       ", dropoff_at = NOW()" +
-      ", final_fare = COALESCE(final_fare, estimated_fare)" +
-      ", actual_duration_min = COALESCE(actual_duration_min, TIMESTAMPDIFF(MINUTE, pickup_at, NOW()))",
+      ", final_fare = COALESCE(final_fare, estimated_fare, 0)" +
+      ", actual_duration_min = COALESCE(actual_duration_min," +
+      " GREATEST(1, TIMESTAMPDIFF(MINUTE, pickup_at, NOW())))",
     cancelled: ", cancelled_by = :cancelledBy, cancel_reason = :cancelReason",
   };
 
@@ -237,6 +253,63 @@ async function advance(tripId, { from, to, extra = {} }) {
     },
   );
   return result.affectedRows === 1;
+}
+
+/**
+ * Writes the passenger's verdict on their own finished ride, once.
+ *
+ * The WHERE clause is the whole rule, exactly as claim() is for an accept:
+ * the ride must be this passenger's, it must be over, and it must not have
+ * been rated already. Two taps on a slow connection both run this; the
+ * first leaves `rated_at IS NULL` false, so the second matches no rows and
+ * is told the ride is already rated rather than overwriting a verdict —
+ * or, worse, paying a second tip.
+ *
+ * `role` is not a parameter and must not become one. A rating is the
+ * passenger's, so this scopes on user_id: asking `user_id = :id OR
+ * driver_id = :id` would let driver 1 rate customer 1's ride the moment
+ * those two sequences lined up, which on a fresh database is immediately.
+ */
+async function rate(tripId, userId, { rating, comment = null, tip = 0 }) {
+  const [result] = await pool.query(
+    `UPDATE trips
+        SET rating = :rating,
+            rating_comment = :comment,
+            tip_amount = :tip,
+            rated_at = NOW()
+      WHERE trip_id = :tripId
+        AND user_id = :userId
+        AND status = 'completed'
+        AND rated_at IS NULL`,
+    { tripId, userId, rating, comment, tip },
+  );
+  return result.affectedRows === 1;
+}
+
+/**
+ * A driver's rating: the average of what their own passengers gave them.
+ *
+ * Derived rather than stored. A column somebody has to remember to update
+ * is a column that disagrees with the rides it claims to summarise, and
+ * `drivers` is a table this repository is not allowed to alter anyway.
+ * Answered out of trips_driver_rating_idx without touching the table.
+ *
+ * NULL for a driver nobody has rated, and that is the answer: a made-up
+ * 5.0 on an empty record is the one figure a passenger cannot check.
+ */
+async function driverRating(driverId) {
+  const [rows] = await pool.query(
+    `SELECT ROUND(AVG(t.rating), 2) AS rating, COUNT(t.rating) AS ratings
+       FROM trips t
+      WHERE t.driver_id = :driverId
+        AND t.rating IS NOT NULL`,
+    { driverId },
+  );
+  const row = rows[0] || {};
+  return {
+    rating: row.rating === null || row.rating === undefined ? null : Number(row.rating),
+    ratings: Number(row.ratings || 0),
+  };
 }
 
 /**
@@ -339,6 +412,8 @@ module.exports = {
   findOpenNear,
   claim,
   advance,
+  rate,
+  driverRating,
   registerPinFailure,
   sweepStale,
   sweepAbandoned,

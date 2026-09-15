@@ -55,6 +55,17 @@ router.post(
   controller.advance,
 );
 
+// The verdict on a finished ride, and the tip that comes with it. The
+// passenger's alone — nothing in this build rates a passenger — and the
+// service scopes the read on user_id to keep it that way.
+router.post(
+  "/:tripId/rating",
+  requireRole("rider"),
+  validateParams(schemas.tripIdParams),
+  validateBody(schemas.ratingSchema),
+  controller.rate,
+);
+
 // --- The ride's thread. Both ends read the same rows. ---
 router.get(
   "/:tripId/messages",

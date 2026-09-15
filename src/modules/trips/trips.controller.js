@@ -14,6 +14,7 @@ const book = asyncHandler(async (req, res) => {
     estimatedFare: req.body.estimated_fare,
     vehicleClass: req.body.vehicle_class,
     service: req.body.service,
+    paymentMethod: req.body.payment_method,
   });
   res.status(201).json({ trip });
 });
@@ -55,6 +56,20 @@ const advance = asyncHandler(async (req, res) => {
   res.status(200).json({ trip });
 });
 
+// The whole trip comes back, not just the rating: the driver's new average
+// is on it, and the app's rating screen is the last thing the passenger
+// sees of this ride.
+const rate = asyncHandler(async (req, res) => {
+  const trip = await tripService.rate(req.params.tripId, req.user.id, {
+    rating: req.body.rating,
+    // The app's own field is `tip`; `tip_amount` is the column's name and
+    // an easy thing for a client to send instead.
+    tip: req.body.tip ?? req.body.tip_amount,
+    comment: req.body.comment,
+  });
+  res.status(201).json({ trip });
+});
+
 const postPosition = asyncHandler(async (req, res) => {
   await tripService.postPosition(req.user.id, {
     lat: req.body.lat,
@@ -86,6 +101,7 @@ module.exports = {
   openRequests,
   accept,
   advance,
+  rate,
   postPosition,
   readMessages,
   postMessage,
