@@ -46,6 +46,18 @@ router.post(
   controller.accept,
 );
 
+// The other half of the accept: this driver passes, and the booking moves
+// on to the others. Driver-only and validated exactly like the accept above,
+// and the driver is the SESSION's — `req.user.id`, never a body or a path
+// segment — so nobody can pass on a stranger's behalf. It changes no status:
+// the ride stays open for every other driver of the right class.
+router.post(
+  "/:tripId/decline",
+  requireRole("driver"),
+  validateParams(schemas.tripIdParams),
+  controller.decline,
+);
+
 // One transition. Who may cause it is decided in the service from the
 // session's role, never from the body.
 router.post(

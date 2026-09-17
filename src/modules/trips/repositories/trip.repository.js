@@ -139,8 +139,30 @@ async function findLiveForAccount(accountId, role) {
  * `age_seconds` comes from the database's clock, not from the reader's: the
  * driver's card says how long the passenger has been waiting, and two
  * machines' idea of "now" differ by more than that card's precision.
+ *
+ * `driverId` and `cooloffMinutes` are what makes a booking MOVE ON. A
+ * request stays 'requested' and is offered to every nearby driver of the
+ * class until somebody wins the accept — which is right — but without the
+ * NOT EXISTS below the driver who just let their card lapse is handed the
+ * very same row on their next poll, two seconds later, for ever, while the
+ * passenger's wait looks the same as if nobody had ever seen it. The
+ * subquery hides it from THAT ONE DRIVER for the cool-off and from nobody
+ * else; the row is untouched, so this is a read-side rotation and not a
+ * state change.
+ *
+ * It is a window and not a blacklist: the comparison is against
+ * `declined_at`, so the booking returns to that driver once their window
+ * lapses. A ride every driver in range has passed on therefore comes back
+ * rather than vanishing, and one nobody ever takes still ends where it
+ * always did — at the request TTL, in sweepStale().
+ *
+ * Both arguments are required for the same reason `vehicleClass` is: a
+ * caller that could omit `driverId` is a caller that silently shows a
+ * driver the bookings they have already refused by forgetting an argument.
  */
-async function findOpenNear({ lat, lng, radiusKm, ttlMinutes, vehicleClass, limit = 10 }) {
+async function findOpenNear({
+  lat, lng, radiusKm, ttlMinutes, vehicleClass, driverId, cooloffMinutes, limit = 10,
+}) {
   const degrees = radiusKm / 111.0;
   const [rows] = await pool.query(
     `SELECT ${TRIP_COLUMNS}, c.full_name AS rider_name,
@@ -153,11 +175,18 @@ async function findOpenNear({ lat, lng, radiusKm, ttlMinutes, vehicleClass, limi
         AND t.requested_at > (NOW() - INTERVAL :ttlMinutes MINUTE)
         AND t.pickup_lat BETWEEN :south AND :north
         AND t.pickup_lng BETWEEN :west  AND :east
+        AND NOT EXISTS (
+              SELECT 1 FROM trip_declines d
+               WHERE d.trip_id = t.trip_id
+                 AND d.driver_id = :driverId
+                 AND d.declined_at > (NOW() - INTERVAL :cooloffMinutes MINUTE))
       ORDER BY t.requested_at ASC
       LIMIT :limit`,
     {
       vehicleClass,
       ttlMinutes,
+      driverId,
+      cooloffMinutes,
       south: lat - degrees,
       north: lat + degrees,
       west: lng - degrees,
@@ -166,6 +195,43 @@ async function findOpenNear({ lat, lng, radiusKm, ttlMinutes, vehicleClass, limi
     },
   );
   return rows;
+}
+
+/**
+ * Records that one driver passed on one booking.
+ *
+ * INSERT ... ON DUPLICATE KEY UPDATE, so the route is idempotent by the
+ * primary key rather than by a read-then-write the caller would have to get
+ * right: a double tap, a retry over a flaky tunnel, or a 30-second lapse
+ * landing just after the Decline button all write the same (trip, driver)
+ * and the second one is not an error.
+ *
+ * The timestamp is REFRESHED by that second write, on purpose. The cool-off
+ * belongs to the last time this driver said no, not the first: a driver
+ * offered the booking again after their window lapsed, who passes on it
+ * again, has said the same thing twice and gets the same quiet for it.
+ *
+ * Nothing here reads or writes `trips`. A decline is not a cancellation and
+ * must never become one — the row stays 'requested' and open to everybody
+ * else, and the only thing that ends a request nobody takes is sweepStale().
+ */
+async function recordDecline(tripId, driverId) {
+  await pool.query(
+    `INSERT INTO trip_declines (trip_id, driver_id, declined_at)
+          VALUES (:tripId, :driverId, NOW())
+     ON DUPLICATE KEY UPDATE declined_at = NOW()`,
+    { tripId, driverId },
+  );
+}
+
+/** When this driver last passed on this booking, or null. Used by tests and support. */
+async function findDecline(tripId, driverId) {
+  const [rows] = await pool.query(
+    `SELECT declined_at FROM trip_declines
+      WHERE trip_id = :tripId AND driver_id = :driverId LIMIT 1`,
+    { tripId, driverId },
+  );
+  return rows[0] || null;
 }
 
 /**
@@ -410,6 +476,8 @@ module.exports = {
   findByIdForParty,
   findLiveForAccount,
   findOpenNear,
+  recordDecline,
+  findDecline,
   claim,
   advance,
   rate,

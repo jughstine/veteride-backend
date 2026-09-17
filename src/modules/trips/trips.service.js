@@ -402,6 +402,12 @@ async function openRequests(driverId, { lat, lng }) {
     radiusKm: env.rides.offerRadiusKm,
     ttlMinutes: env.rides.requestTtlMinutes,
     vehicleClass: klass,
+    // What this driver has already passed on, and for how long that lasts.
+    // The row itself is untouched and every other driver in range still
+    // sees it; this is the read that makes a booking move on to them
+    // instead of bouncing off the same phone every two seconds.
+    driverId,
+    cooloffMinutes: env.rides.declineCooloffMinutes,
   });
 
   const requests = rows
@@ -413,6 +419,114 @@ async function openRequests(driverId, { lat, lng }) {
   // The key is always present, so the driver's app reads one shape whether
   // the silence has a reason behind it or not.
   return { requests, reason: null };
+}
+
+/**
+ * POST /trips/:tripId/decline — this driver passes, and the booking rotates.
+ *
+ * The owner's rule (17 Sep 2026): "if the driver did not accept the request
+ * for 30 seconds the passenger will keep looking for other available
+ * drivers." The driver's card already counts those thirty seconds down; what
+ * it had nowhere to say them to was this. A pass told to nobody is a pass
+ * that never happened — GET /trips/open handed the same row back on the very
+ * next poll — so the driver who let it lapse kept being asked, and the
+ * drivers it should have moved to never saw it climb their list.
+ *
+ * What this writes is one row in `trip_declines` and NOTHING ELSE. In
+ * particular it does not touch `status`, because a decline is not a
+ * cancellation: the booking stays 'requested', stays visible to every other
+ * approved driver of the right class in range, and still ends — if nobody
+ * ever takes it — at the request TTL in sweepStale(), as 'system'. Letting
+ * one driver's shrug cancel a stranger's ride is the single worst thing this
+ * route could be made to do, and the separation is deliberate.
+ *
+ * A driver can only ever pass on their OWN behalf: `driverId` is the
+ * session's (`req.user.id`), it is never read from the body or the URL, and
+ * there is no argument by which one driver could name another. The refusals
+ * below are the same ones accept() makes, in the same order, so a card that
+ * cannot be accepted cannot be declined either — a driver cannot mark a
+ * booking for a vehicle they do not drive.
+ *
+ * THE SAME DRIVER BEING THE ONLY ONE IN RANGE is the case worth naming,
+ * because it is the one where this could strand somebody. It does not:
+ *
+ *   * the cool-off is a WINDOW, not a blacklist. After
+ *     RIDES.declineCooloffMinutes (3 by default) the booking reappears on
+ *     that lone driver's list, with the passenger's real waiting time on the
+ *     card, and they can take it after all. A rural driver who thumbed
+ *     Decline by accident has not destroyed the only ride available.
+ *   * the window is a fifth of the request TTL (15 minutes), so it lapses
+ *     four times over before the booking can expire. The passenger is never
+ *     waiting on a row that has become invisible to everyone alive.
+ *   * and if nobody does take it, the passenger is NOT left in silence:
+ *     sweepStale() cancels the request at the TTL with cancelled_by
+ *     'system' and the reason "No driver accepted in time", which both
+ *     apps already read and show. A honest "nobody came" beats a spinner.
+ *
+ * Idempotent by the table's primary key: declining twice is one row and no
+ * error, and the second pass simply restarts this driver's own window.
+ */
+async function decline(tripId, driverId) {
+  const driver = await userRepo.findByIdForRole("driver", driverId);
+  if (!driver) throw new AppError(404, "PROFILE_NOT_FOUND", "Driver profile not found");
+  if (driver.verification_status !== "approved") {
+    throw new AppError(403, "NOT_VERIFIED", "Your documents are not approved yet");
+  }
+
+  const row = await tripRepo.findById(tripId);
+  if (!row) throw new AppError(404, "TRIP_NOT_FOUND", "No such trip");
+
+  // Not open any more: another driver won it while this card sat on screen,
+  // the passenger called it off, or the TTL swept it. Refused politely and
+  // with no ride attached — this driver is not a party to it, and the trip
+  // view carries the handover PIN. Their app drops the card either way, so
+  // the outcome on the handset is the same one a decline would have given.
+  if (row.status !== "requested" || row.driver_id !== null) {
+    throw new AppError(
+      409,
+      "TRIP_NOT_OPEN",
+      "That booking is no longer open",
+    );
+  }
+
+  // Offerable to THEM, by exactly the rule the open list and the accept use.
+  // A driver must not be able to pass on work they were never shown: a
+  // motorcycle rider quietly declining every car booking in the city would
+  // hide those rides from nobody but themselves, but it is a write on a
+  // stranger's ride they have no business making.
+  const vehicle = await vehicleRepo.findForDriver(driverId);
+  const klass = vehicleClass.classOfVehicle(vehicle);
+  if (!klass) {
+    throw new AppError(
+      403,
+      "NO_VEHICLE_CLASS",
+      "Your vehicle has no type on file, so you cannot be matched to a booking",
+    );
+  }
+  if (klass !== row.vehicle_class) {
+    throw new AppError(
+      409,
+      "VEHICLE_CLASS_MISMATCH",
+      `This ride needs a ${vehicleClass.labelOf(row.vehicle_class)}`,
+    );
+  }
+
+  await tripRepo.recordDecline(tripId, driverId);
+
+  // The open list changed for everybody else, so tell the drivers holding a
+  // stream to re-read it. The event carries no ride — it says only "the open
+  // list changed" — and each phone answers with its own GET /trips/open,
+  // which applies its own radius and its own cool-off. This is what turns
+  // "the passenger keeps looking" from a poll interval into something that
+  // happens the moment a driver says no.
+  realtime.notifyDrivers("offers");
+
+  return {
+    trip_id: tripId,
+    // How long this booking stays out of THIS driver's list. Stated so the
+    // app never has to guess, and so the number lives in one place.
+    cooloff_seconds: env.rides.declineCooloffMinutes * 60,
+  };
 }
 
 // POST /trips/:tripId/accept — the driver takes it.
@@ -774,6 +888,7 @@ module.exports = {
   readOne,
   openRequests,
   accept,
+  decline,
   advance,
   rate,
   postPosition,
