@@ -6,6 +6,14 @@ const { verifyGoogleIdToken } = require("./google.client");
 const { getRoleConfig } = require("./repositories/role-tables");
 const userRepo = require("./repositories/user.repository");
 const tokenRepo = require("./repositories/token.repository");
+const emailCodeRepo = require("./repositories/email-code.repository");
+const mailer = require("../../utils/mailer");
+const { buildSignInCodeEmail } = require("./sign-in-code.email");
+const {
+  generateCode,
+  hashCode,
+  hashesMatch,
+} = require("../../utils/email-code");
 const logger = require("../../utils/logger");
 
 function addDays(days) {
@@ -377,6 +385,202 @@ async function resetPassword({ token, newPassword }) {
   );
 }
 
+// ---------------------------------------------------------------------
+// POST /auth/email-code
+// ---------------------------------------------------------------------
+// Mails six digits to the address on the account, and says the same thing
+// however that went.
+//
+// The 202 is unconditional for a reason. "No such account" here would be a
+// free directory of everybody who has ever signed up: an attacker types a
+// list of addresses at it and keeps the ones that come back different. So
+// an unknown identifier, an account with no e-mail on it, and a suspended
+// account all take the same quiet path as a successful send -- the only
+// thing that varies is whether a message was actually posted, which the
+// caller cannot observe.
+//
+// The one refusal this route does make is about ITSELF, not about the
+// account: with no SMTP settings there is nothing to send with, and that is
+// checked BEFORE the account is looked up, so the 503 is identical for a
+// real address and an invented one.
+async function requestEmailCode({ role, identifier }, ip) {
+  if (!mailer.isConfigured()) {
+    throw new AppError(
+      503,
+      "EMAIL_NOT_CONFIGURED",
+      "Sign-in codes are unavailable: this server has no mail settings",
+    );
+  }
+
+  const cfg = getRoleConfig(role);
+  if (!cfg) return; // swallowed, like forgotPassword: do not confirm role validity
+
+  const account = await userRepo.findByIdentifierForRole(
+    role,
+    identifier.toLowerCase().trim(),
+  );
+  if (!account) return;
+
+  // A suspended or deactivated account cannot open a session (login refuses
+  // it), so mailing it a code would be an invitation to nothing. Silent
+  // rather than refused: saying "that account is suspended" to an
+  // unauthenticated caller is the same oracle in a different coat.
+  if (account.status && account.status !== "active") return;
+
+  // An account somehow without an address has nowhere to send to. Not an
+  // error -- the caller must not learn the difference.
+  if (!account.email) return;
+
+  const userId = account[cfg.idColumn];
+  const code = generateCode();
+  const ttlMinutes = env.emailCode.ttlMinutes;
+
+  // Stored first, sent second. The other order would let a message arrive
+  // carrying a code the database has never heard of.
+  await emailCodeRepo.upsertEmailCode({
+    role,
+    userId,
+    codeHash: hashCode({ role, userId, code }),
+    expiresAt: addMinutes(ttlMinutes),
+    requestedIp: ip || null,
+  });
+
+  const message = buildSignInCodeEmail({ code, ttlMinutes });
+
+  try {
+    await mailer.sendMail({
+      to: account.email,
+      subject: message.subject,
+      text: message.text,
+      html: message.html,
+    });
+  } catch (err) {
+    // The code cannot be delivered, so it is withdrawn rather than left
+    // pending: the person would otherwise be staring at a "we sent you a
+    // code" screen with a live code in a mailbox it never reached.
+    //
+    // Still a 202 to the caller. A 502 here would be the enumeration oracle
+    // again by the back door -- an invented address returns 202 and a real
+    // one returns 502 the moment the relay is unwell. The failure belongs
+    // in the server's log, where the owner is the one who reads it.
+    await emailCodeRepo.deleteEmailCode({ role, userId });
+    logger.error("Sign-in code e-mail failed to send", {
+      role,
+      userId,
+      reason: err.message,
+    });
+  }
+
+  // Nothing is returned, and nothing ever could be: `code` goes out of
+  // scope here and was never written to a log, a response, or the database
+  // in the clear.
+}
+
+// ---------------------------------------------------------------------
+// POST /auth/email-code/verify
+// ---------------------------------------------------------------------
+// Spends the code and answers EXACTLY what login answers, so the app adopts
+// the session through the code path it already has.
+//
+// Two refusals, and the split is deliberate:
+//
+//   INVALID_EMAIL_CODE             the digits were wrong, and here is how
+//                                  many guesses are left on this code.
+//   EMAIL_CODE_INVALID_OR_EXPIRED  there is nothing to guess at: expired,
+//                                  already spent, out of attempts, never
+//                                  asked for, or no such account. One
+//                                  answer for all five, because telling
+//                                  them apart is telling the caller which
+//                                  accounts exist.
+//
+// The narrow seam that remains: a caller who FIRST triggers a code for an
+// address -- which mails the real owner and is capped at five an hour --
+// can tell the two refusals apart afterwards and so learn the account
+// exists. Closing it entirely would mean minting decoy rows for addresses
+// with no account behind them; the attempts-left counter the app needs to
+// say "2 tries left" is the trade, and it costs the attacker a noisy,
+// throttled e-mail to a stranger for every address they test.
+async function verifyEmailCode({ role, identifier, code }, ip) {
+  const cfg = getRoleConfig(role);
+
+  const notValidError = () =>
+    new AppError(
+      401,
+      "EMAIL_CODE_INVALID_OR_EXPIRED",
+      "That sign-in code is not valid. Request a new one.",
+    );
+
+  if (!cfg) throw notValidError();
+
+  const account = await userRepo.findByIdentifierForRole(
+    role,
+    identifier.toLowerCase().trim(),
+  );
+  if (!account) throw notValidError();
+
+  const userId = account[cfg.idColumn];
+  const maxAttempts = env.emailCode.maxAttempts;
+
+  // One predicate covers unspent, unexpired and attempts-remaining, so all
+  // three arrive here as the same null.
+  const pending = await emailCodeRepo.findLiveEmailCode({
+    role,
+    userId,
+    maxAttempts,
+  });
+  if (!pending) throw notValidError();
+
+  // The role and the id are inside the hash, so a code minted for a driver
+  // hashes to something else when it is offered as a rider's -- belt and
+  // braces over the (user_role, user_id) key that already scoped the read.
+  const offered = hashCode({ role, userId, code });
+
+  if (!hashesMatch(offered, pending.code_hash)) {
+    const attemptsRemaining = await emailCodeRepo.recordFailedAttempt({
+      role,
+      userId,
+      maxAttempts,
+    });
+    throw new AppError(
+      401,
+      "INVALID_EMAIL_CODE",
+      attemptsRemaining > 0
+        ? "That code is not right."
+        : "That code is not right, and it has no attempts left. Request a new one.",
+      { attempts_remaining: attemptsRemaining },
+    );
+  }
+
+  // Spent by the UPDATE itself, not by a read followed by a write: two
+  // requests carrying the same correct code both reach this line, and only
+  // the one that changes a row is allowed to mint a session.
+  const consumed = await emailCodeRepo.consumeEmailCode({
+    role,
+    userId,
+    codeHash: offered,
+  });
+  if (!consumed) throw notValidError();
+
+  // Checked after the code is spent, and answered plainly: this caller has
+  // proved they read the account's mail, so they are owed the real reason.
+  // Login says the same thing in the same words.
+  if (account.status && account.status !== "active") {
+    throw new AppError(
+      403,
+      "ACCOUNT_NOT_ACTIVE",
+      `Account is ${account.status}`,
+    );
+  }
+
+  const session = await issueSession(role, userId, ip);
+  return {
+    status: "signed_in",
+    user: stripSensitive(account),
+    role,
+    ...session,
+  };
+}
+
 module.exports = {
   register,
   login,
@@ -386,4 +590,6 @@ module.exports = {
   logout,
   forgotPassword,
   resetPassword,
+  requestEmailCode,
+  verifyEmailCode,
 };
