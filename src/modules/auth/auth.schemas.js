@@ -63,6 +63,25 @@ const resetPasswordSchema = z.object({
   new_password: password,
 });
 
+// Same {role, identifier} pair loginSchema and forgotPasswordSchema take, so
+// the app sends the account it is already holding without reshaping it.
+const emailCodeRequestSchema = z.object({
+  role: z.enum(["rider", "driver", "admin"]),
+  identifier: z.string().trim().min(1), // email or phone
+});
+
+// Exactly six digits, as a string: "004321" is a real code and Number()
+// would turn it into 4321. The regex also keeps a malformed guess from ever
+// reaching the hash comparison.
+const emailCodeVerifySchema = z.object({
+  role: z.enum(["rider", "driver", "admin"]),
+  identifier: z.string().trim().min(1),
+  code: z
+    .string()
+    .trim()
+    .regex(/^[0-9]{6}$/, "must be six digits"),
+});
+
 module.exports = {
   registerSchema,
   loginSchema,
@@ -72,4 +91,6 @@ module.exports = {
   logoutSchema,
   forgotPasswordSchema,
   resetPasswordSchema,
+  emailCodeRequestSchema,
+  emailCodeVerifySchema,
 };

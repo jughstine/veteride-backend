@@ -61,6 +61,42 @@ module.exports = {
     ttlMinutes: parseInt(process.env.RESET_TOKEN_TTL_MIN || "30", 10),
   },
 
+  // Outgoing mail. NO DEFAULTS, deliberately.
+  //
+  // Every other setting in this file can fall back to something sensible
+  // because a wrong guess costs a wrong number. A guessed mail server costs
+  // a sign-in code delivered to somebody else's relay, so the answer when
+  // these are unset is null, `required()` is not used on them, and the
+  // server boots without them: src/utils/mailer.js reports itself
+  // unconfigured and POST /auth/email-code refuses with a 503 that names
+  // the reason. Everything else in the API carries on working.
+  //
+  // The deployed server holds the real Gmail values in its own .env.
+  mail: {
+    host: process.env.SMTP_HOST || null,
+    port: process.env.SMTP_PORT ? parseInt(process.env.SMTP_PORT, 10) : null,
+    // A relay that wants no credentials is a valid relay, so these two stay
+    // optional; mailer.js sends AUTH only when both are present.
+    user: process.env.SMTP_USER || null,
+    pass: process.env.SMTP_PASS || null,
+    from: process.env.MAIL_FROM || null,
+  },
+
+  emailCode: {
+    // How long six digits are worth anything. TEN MINUTES: long enough to
+    // fetch a phone from the next room and for the mail to clear a slow
+    // relay, short enough that a code left open on a screen at lunchtime is
+    // dead by the time anybody walks past it.
+    ttlMinutes: parseInt(process.env.EMAIL_CODE_TTL_MIN || "10", 10),
+
+    // Wrong guesses before the code dies and a new one has to be asked for.
+    // FIVE, the same allowance the handover PIN gets. A million
+    // combinations is a wall for a person and a half-second for a script;
+    // this is the number that makes the difference, not the length of the
+    // code.
+    maxAttempts: parseInt(process.env.EMAIL_CODE_MAX_ATTEMPTS || "5", 10),
+  },
+
   google: {
     clientIds: requiredList("GOOGLE_CLIENT_IDS"),
   },

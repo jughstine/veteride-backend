@@ -1,5 +1,6 @@
 const authService = require("./auth.service");
 const asyncHandler = require("../../utils/asyncHandler");
+const env = require("../../config/env");
 
 function sessionResponse(res, statusCode, result) {
   const { accessToken, refreshToken, ...rest } = result;
@@ -76,6 +77,34 @@ const resetPassword = asyncHandler(async (req, res) => {
   res.status(200).json({ message: "Password has been reset." });
 });
 
+// One 202 and one sentence, whatever happened behind it. Same discipline as
+// forgotPassword above: an account that exists and one that does not must
+// produce byte-identical replies, so nothing account-shaped goes in the
+// body. `expires_in_minutes` is a server setting, the same number for
+// everybody, and the app needs it to run the countdown on the code screen.
+const requestEmailCode = asyncHandler(async (req, res) => {
+  const { role, identifier } = req.body;
+  await authService.requestEmailCode({ role, identifier }, req.ip);
+  res.status(202).json({
+    status: "email_code_sent",
+    message: "If an account exists, a sign-in code has been sent to its e-mail.",
+    expires_in_minutes: env.emailCode.ttlMinutes,
+  });
+});
+
+// 200 and the LOGIN BODY, exactly: {status, user, role, access_token,
+// refresh_token} through the same sessionResponse every other session flow
+// in this file goes through. The app has one function that adopts a
+// session; this must not give it a second shape to learn.
+const verifyEmailCode = asyncHandler(async (req, res) => {
+  const { role, identifier, code } = req.body;
+  const result = await authService.verifyEmailCode(
+    { role, identifier, code },
+    req.ip,
+  );
+  sessionResponse(res, 200, result);
+});
+
 module.exports = {
   register,
   login,
@@ -85,4 +114,6 @@ module.exports = {
   logout,
   forgotPassword,
   resetPassword,
+  requestEmailCode,
+  verifyEmailCode,
 };
