@@ -126,6 +126,25 @@ module.exports = {
     // gave up and walked.
     requestTtlMinutes: parseInt(process.env.REQUEST_TTL_MIN || "15", 10),
 
+    // How long a booking stays out of sight of the ONE DRIVER who passed on
+    // it. The owner's rule (17 Sep 2026): "if the driver did not accept the
+    // request for 30 seconds the passenger will keep looking for other
+    // available drivers." Nothing is reserved for that driver and nothing is
+    // taken from anybody else — every other driver in range goes on seeing
+    // the row throughout — so this is the interval that makes the rotation
+    // real: without it GET /trips/open hands the same booking back to the
+    // same driver two seconds later, for ever.
+    //
+    // THREE MINUTES, and both ends of that number matter. Long enough that
+    // the booking reaches everyone else first: six 30-second cards' worth.
+    // Short enough to be a fraction of requestTtlMinutes (15), so a booking
+    // every driver in range has passed on comes BACK to them with time to
+    // spare rather than dying unseen — a passenger is not stranded by having
+    // been unlucky in who polled first. A value at or above the TTL would
+    // quietly turn one driver's decline into a cancellation, which is the
+    // one thing a decline must never be.
+    declineCooloffMinutes: parseInt(process.env.DECLINE_COOLOFF_MIN || "3", 10),
+
     // A fix older than this is not a position. A driver whose phone went
     // to sleep an hour ago must not be offered a ride at their last known
     // junction.

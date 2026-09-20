@@ -45,6 +45,14 @@ const accept = asyncHandler(async (req, res) => {
   res.status(200).json({ trip: await tripService.accept(req.params.tripId, req.user.id) });
 });
 
+// The driver passes. 200 with the pass and how long it lasts — not 204,
+// because the app shows the driver why the card will not come straight back
+// and must not have to invent the number. Nothing about the ride changes:
+// the booking stays open and every other driver in range still sees it.
+const decline = asyncHandler(async (req, res) => {
+  res.status(200).json(await tripService.decline(req.params.tripId, req.user.id));
+});
+
 const advance = asyncHandler(async (req, res) => {
   const trip = await tripService.advance(req.params.tripId, {
     accountId: req.user.id,
@@ -100,6 +108,7 @@ module.exports = {
   readOne,
   openRequests,
   accept,
+  decline,
   advance,
   rate,
   postPosition,
