@@ -27,6 +27,8 @@ async function upsertPending({ role, userId, secretSealed }) {
        confirmed_at    = NULL,
        last_used_at    = NULL,
        failed_attempts = 0,
+       locked_until    = NULL,
+       last_counter    = NULL,
        created_at      = CURRENT_TIMESTAMP`,
     { role, userId, secretSealed },
   );
@@ -49,41 +51,106 @@ async function find({ role, userId }) {
  * that was just confirmed against — if a second enrolment started in between,
  * this one no longer applies to anything.
  */
-async function confirm({ role, userId, secretSealed }) {
+async function confirm({ role, userId, secretSealed, counter }) {
   const [result] = await pool.query(
     `UPDATE auth_authenticators
      SET confirmed_at = CURRENT_TIMESTAMP,
          last_used_at = CURRENT_TIMESTAMP,
-         failed_attempts = 0
+         failed_attempts = 0,
+         locked_until = NULL,
+         -- The confirming code is spent by confirming. Without this it stays
+         -- good for the next minute and a half, and the first sign-in could
+         -- be walked through with the very digits just typed into the setup
+         -- screen.
+         last_counter = :counter
      WHERE user_role = :role
        AND user_id = :userId
        AND secret_sealed = :secretSealed
        AND confirmed_at IS NULL`,
-    { role, userId, secretSealed },
+    { role, userId, secretSealed, counter },
   );
   return result.affectedRows === 1;
 }
 
-/** A code was accepted: the count of wrong ones goes back to nothing. */
-async function recordSuccess({ role, userId }) {
-  await pool.query(
+/**
+ * Spends a code: records the step it belonged to, and clears the wrong-code
+ * count.
+ *
+ * THE UPDATE IS THE CHECK. `last_counter < :counter` is in the WHERE clause,
+ * so two requests carrying the same six digits both reach this line and MySQL
+ * applies exactly one of them — the second matches no row because the step is
+ * no longer newer than what is stored. `affectedRows === 1` is therefore the
+ * permission to mint a session, and reading the row first and updating after
+ * would hand out two.
+ */
+async function spendCode({ role, userId, counter }) {
+  const [result] = await pool.query(
     `UPDATE auth_authenticators
-     SET last_used_at = CURRENT_TIMESTAMP, failed_attempts = 0
-     WHERE user_role = :role AND user_id = :userId`,
-    { role, userId },
+     SET last_used_at = CURRENT_TIMESTAMP,
+         failed_attempts = 0,
+         locked_until = NULL,
+         last_counter = :counter
+     WHERE user_role = :role
+       AND user_id = :userId
+       AND confirmed_at IS NOT NULL
+       AND (last_counter IS NULL OR last_counter < :counter)`,
+    { role, userId, counter },
   );
+  return result.affectedRows === 1;
 }
 
-/** A wrong code, and how many have been wrong in a row now. */
-async function recordFailure({ role, userId }) {
+/**
+ * A wrong code. Returns how many are left, and closes the door for a while
+ * when they run out.
+ *
+ * The wait EXPIRES ON ITS OWN, and that is the whole point of `locked_until`.
+ * A count with nothing to clear it is not a limit, it is a permanent lock:
+ * every route that resets the count is one a locked account can no longer
+ * reach, so the fifth typo would end the account for good. The count trips
+ * the lock and is then put back to zero; the clock releases it.
+ */
+async function recordFailure({ role, userId, maxAttempts, lockMinutes }) {
   await pool.query(
     `UPDATE auth_authenticators
      SET failed_attempts = failed_attempts + 1
      WHERE user_role = :role AND user_id = :userId`,
     { role, userId },
   );
+
   const row = await find({ role, userId });
-  return row ? Number(row.failed_attempts) : 0;
+  const failed = row ? Number(row.failed_attempts) : 0;
+
+  if (failed >= maxAttempts) {
+    await pool.query(
+      `UPDATE auth_authenticators
+       SET locked_until = DATE_ADD(CURRENT_TIMESTAMP, INTERVAL :lockMinutes MINUTE),
+           failed_attempts = 0
+       WHERE user_role = :role AND user_id = :userId`,
+      { role, userId, lockMinutes },
+    );
+    return 0;
+  }
+  return Math.max(0, maxAttempts - failed);
+}
+
+/**
+ * Whether this account is inside a cooling-off period, decided BY THE
+ * DATABASE'S clock rather than by node's: the pool is `dateStrings` at +08:00
+ * and reading those strings in the process's own timezone could hold a lock
+ * open for hours or release it early.
+ */
+async function lockedFor({ role, userId }) {
+  const [rows] = await pool.query(
+    `SELECT TIMESTAMPDIFF(SECOND, CURRENT_TIMESTAMP, locked_until) AS seconds_left
+     FROM auth_authenticators
+     WHERE user_role = :role
+       AND user_id = :userId
+       AND locked_until IS NOT NULL
+       AND locked_until > CURRENT_TIMESTAMP
+     LIMIT 1`,
+    { role, userId },
+  );
+  return rows[0] ? Math.max(1, Number(rows[0].seconds_left)) : 0;
 }
 
 /** Switches it off entirely. The row goes; there is nothing worth keeping. */
@@ -100,7 +167,8 @@ module.exports = {
   upsertPending,
   find,
   confirm,
-  recordSuccess,
+  spendCode,
   recordFailure,
+  lockedFor,
   remove,
 };

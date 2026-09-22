@@ -85,7 +85,15 @@ function codeFor(secret, counter) {
 }
 
 /**
- * Whether six typed digits are right for this secret, now.
+ * WHICH 30-second step six typed digits belong to, or null if they belong to
+ * none of the ones on offer.
+ *
+ * It returns the step rather than a yes/no because the caller has to be able
+ * to refuse a step it has already accepted: a code is good for its own window
+ * and the one either side, which is ninety seconds of the same six digits, and
+ * in that time a code seen over a shoulder or lifted from a captured request
+ * can be spent twice. Knowing the step is what makes refusing the second one
+ * possible (RFC 6238 §5.2).
  *
  * ONE STEP EITHER SIDE is allowed, which is 30 seconds of slack in each
  * direction. Phone clocks drift, and a code read out and typed at the turn of
@@ -96,19 +104,31 @@ function codeFor(secret, counter) {
  * character that differs, and the time it took to say no is a measurement of
  * how much was right.
  */
-function verifyCode(secret, typed, { at = Date.now(), window = 1 } = {}) {
-  if (typeof typed !== "string" || !/^[0-9]{6}$/.test(typed)) return false;
+function matchCode(secret, typed, { at = Date.now(), window = 1 } = {}) {
+  if (typeof typed !== "string" || !/^[0-9]{6}$/.test(typed)) return null;
   const counter = Math.floor(at / 1000 / 30);
   const given = Buffer.from(typed, "utf8");
 
-  let ok = false;
+  let matched = null;
   for (let drift = -window; drift <= window; drift++) {
-    const candidate = Buffer.from(codeFor(secret, counter + drift), "utf8");
+    const step = counter + drift;
+    const candidate = Buffer.from(codeFor(secret, step), "utf8");
     // Every step is checked even once one has matched: returning early would
     // leak which window it was, and the loop is three HMACs.
-    if (crypto.timingSafeEqual(candidate, given)) ok = true;
+    if (crypto.timingSafeEqual(candidate, given)) matched = step;
   }
-  return ok;
+  return matched;
+}
+
+/**
+ * Whether six digits are right at all, with no question of replay.
+ *
+ * For the two places where a code proves possession of the phone rather than
+ * opening a session — confirming an enrolment, and switching the thing off.
+ * Neither hands out anything a captured code could be spent on twice.
+ */
+function verifyCode(secret, typed, options) {
+  return matchCode(secret, typed, options) !== null;
 }
 
 /**
@@ -178,6 +198,7 @@ function openSecret(sealed) {
 module.exports = {
   generateSecret,
   codeFor,
+  matchCode,
   verifyCode,
   enrolmentUri,
   sealSecret,
