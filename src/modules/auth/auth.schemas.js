@@ -82,7 +82,26 @@ const emailCodeVerifySchema = z.object({
     .regex(/^[0-9]{6}$/, "must be six digits"),
 });
 
+// Six digits, as a string. "004321" is a real code and Number() would make
+// it 4321; the regex also keeps a malformed guess away from the comparison.
+const authenticatorCode = z
+  .string()
+  .trim()
+  .regex(/^[0-9]{6}$/, "must be six digits");
+
+const authenticatorConfirmSchema = z.object({ code: authenticatorCode });
+
+const authenticatorVerifySchema = z.object({
+  challenge_token: z.string().min(1),
+  code: authenticatorCode,
+});
+
+const authenticatorDisableSchema = z.object({ code: authenticatorCode });
+
 module.exports = {
+  authenticatorConfirmSchema,
+  authenticatorVerifySchema,
+  authenticatorDisableSchema,
   registerSchema,
   loginSchema,
   googleSchema,

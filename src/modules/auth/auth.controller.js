@@ -105,7 +105,65 @@ const verifyEmailCode = asyncHandler(async (req, res) => {
   sessionResponse(res, 200, result);
 });
 
+/* ── The authenticator ─────────────────────────────────────────────────
+ *
+ * Four of the five are for somebody already signed in — the enrolment is a
+ * setting, not a way in. The exception is `verifyAuthenticator`, which is the
+ * second half of a sign-in that stopped and so carries no bearer at all.
+ */
+
+const startAuthenticator = asyncHandler(async (req, res) => {
+  const result = await authService.startAuthenticator({
+    role: req.user.role,
+    userId: req.user.id,
+  });
+  // 200, not 201: nothing is switched on yet. The secret is returned exactly
+  // once, here — it is encrypted at rest and cannot be read back out.
+  res.status(200).json(result);
+});
+
+const confirmAuthenticator = asyncHandler(async (req, res) => {
+  const result = await authService.confirmAuthenticator({
+    role: req.user.role,
+    userId: req.user.id,
+    code: req.body.code,
+  });
+  res.status(200).json(result);
+});
+
+// The only route that turns a challenge into a session, and the only one of
+// the five that is not behind `authenticate`.
+const verifyAuthenticator = asyncHandler(async (req, res) => {
+  const result = await authService.verifyAuthenticator(
+    { challengeToken: req.body.challenge_token, code: req.body.code },
+    req.ip,
+  );
+  sessionResponse(res, 200, result);
+});
+
+const disableAuthenticator = asyncHandler(async (req, res) => {
+  const result = await authService.disableAuthenticator({
+    role: req.user.role,
+    userId: req.user.id,
+    code: req.body.code,
+  });
+  res.status(200).json(result);
+});
+
+const authenticatorStatus = asyncHandler(async (req, res) => {
+  const result = await authService.authenticatorStatus({
+    role: req.user.role,
+    userId: req.user.id,
+  });
+  res.status(200).json(result);
+});
+
 module.exports = {
+  startAuthenticator,
+  confirmAuthenticator,
+  verifyAuthenticator,
+  disableAuthenticator,
+  authenticatorStatus,
   register,
   login,
   google,

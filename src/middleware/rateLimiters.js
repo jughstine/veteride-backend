@@ -143,7 +143,36 @@ const emailCodeVerifyIpLimiter = rateLimit({
   message: tooManyAttempts,
 });
 
+/* ── The authenticator ─────────────────────────────────────────────────
+ *
+ * The verify route is the one that matters: it is unauthenticated by
+ * necessity (the sign-in has not finished), and six digits is a million
+ * guesses. The per-account attempt count in auth_authenticators closes it
+ * properly; this stops a caller working through accounts from one machine.
+ */
+const authenticatorVerifyIpLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 30,
+  keyGenerator: byCaller,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: tooManyAttempts,
+});
+
+// Enrolling is cheap but not free — each call mints a secret and replaces the
+// pending row — and nobody legitimately starts setup twenty times an hour.
+const authenticatorSetupLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 20,
+  keyGenerator: byCaller,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: tooManyAttempts,
+});
+
 module.exports = {
+  authenticatorVerifyIpLimiter,
+  authenticatorSetupLimiter,
   loginLimiter,
   registerLimiter,
   forgotPasswordLimiter,
