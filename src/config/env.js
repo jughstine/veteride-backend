@@ -97,6 +97,23 @@ module.exports = {
     maxAttempts: parseInt(process.env.EMAIL_CODE_MAX_ATTEMPTS || "5", 10),
   },
 
+  // The optional authenticator (TOTP). Nothing here is required: an account
+  // that never enrols is never challenged, so a server with none of these set
+  // behaves exactly as it did before the feature existed.
+  authenticator: {
+    // How long a stopped sign-in may be finished. FIVE MINUTES: long enough
+    // to fetch a phone and read six digits, short enough that a challenge
+    // captured off a screen is worthless by the time anybody uses it.
+    challengeTtlMinutes: parseInt(
+      process.env.AUTHENTICATOR_CHALLENGE_TTL_MIN || "5",
+      10,
+    ),
+    // Wrong codes in a row before the account stops answering. Six digits is
+    // a million, and a 90-second window is wide enough for a script to try a
+    // great many of them; this count is what actually closes it.
+    maxAttempts: parseInt(process.env.AUTHENTICATOR_MAX_ATTEMPTS || "5", 10),
+  },
+
   google: {
     clientIds: requiredList("GOOGLE_CLIENT_IDS"),
   },

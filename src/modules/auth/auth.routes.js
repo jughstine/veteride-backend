@@ -10,7 +10,10 @@ const {
   emailCodeRequestIpLimiter,
   emailCodeVerifyLimiter,
   emailCodeVerifyIpLimiter,
+  authenticatorVerifyIpLimiter,
+  authenticatorSetupLimiter,
 } = require('../../middleware/rateLimiters');
+const { authenticate } = require('../../middleware/authenticate');
 const schemas = require('./auth.schemas');
 
 const router = Router();
@@ -92,6 +95,43 @@ router.post(
   validateBody(schemas.emailCodeVerifySchema),
   emailCodeVerifyLimiter,
   controller.verifyEmailCode
+);
+
+// --- The optional authenticator (TOTP) ---
+//
+// Four of these are settings on an account that is already signed in, so they
+// sit behind `authenticate`. /verify is the exception and cannot be: it is
+// the second half of a sign-in that has not finished, so there is no bearer
+// to present. It carries the challenge instead, and its own IP limiter.
+
+router.post(
+  '/authenticator/verify',
+  authenticatorVerifyIpLimiter,
+  validateBody(schemas.authenticatorVerifySchema),
+  controller.verifyAuthenticator
+);
+
+router.get('/authenticator', authenticate, controller.authenticatorStatus);
+
+router.post(
+  '/authenticator',
+  authenticate,
+  authenticatorSetupLimiter,
+  controller.startAuthenticator
+);
+
+router.post(
+  '/authenticator/confirm',
+  authenticate,
+  validateBody(schemas.authenticatorConfirmSchema),
+  controller.confirmAuthenticator
+);
+
+router.delete(
+  '/authenticator',
+  authenticate,
+  validateBody(schemas.authenticatorDisableSchema),
+  controller.disableAuthenticator
 );
 
 module.exports = router;

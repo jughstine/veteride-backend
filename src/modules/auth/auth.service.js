@@ -1,3 +1,5 @@
+const crypto = require("crypto");
+const jwt = require("jsonwebtoken");
 const AppError = require("../../utils/AppError");
 const env = require("../../config/env");
 const { hashPassword, comparePassword } = require("../../utils/password");
@@ -7,6 +9,8 @@ const { getRoleConfig } = require("./repositories/role-tables");
 const userRepo = require("./repositories/user.repository");
 const tokenRepo = require("./repositories/token.repository");
 const emailCodeRepo = require("./repositories/email-code.repository");
+const authenticatorRepo = require("./repositories/authenticator.repository");
+const totp = require("../../utils/totp");
 const mailer = require("../../utils/mailer");
 const { buildSignInCodeEmail } = require("./sign-in-code.email");
 const {
@@ -46,6 +50,57 @@ async function issueSession(role, userId, ip) {
   });
 
   return { accessToken, refreshToken };
+}
+
+/**
+ * A signed-in reply, unless this account has switched the authenticator on —
+ * in which case a CHALLENGE, and no session at all.
+ *
+ * EVERY way in goes through here: password, Google, and the e-mailed code. A
+ * second factor that one of the three doors skips is not a second factor, it
+ * is a formality — and Google is the door most riders actually use.
+ *
+ * The challenge is a short-lived token signed with a key of its own, derived
+ * from the access secret but not equal to it. That matters: if it were signed
+ * with the access secret, `authenticate` would accept the challenge itself as
+ * a bearer token and the second step could be walked straight past.
+ */
+async function sessionOrChallenge({ role, userId, account, ip }) {
+  const armed = await authenticatorRepo.find({ role, userId });
+  if (!armed || !armed.confirmed_at) {
+    const session = await issueSession(role, userId, ip);
+    return { status: "signed_in", user: stripSensitive(account), role, ...session };
+  }
+
+  return {
+    status: "authenticator_required",
+    role,
+    challenge_token: signChallenge({ role, userId }),
+    expires_in_minutes: env.authenticator.challengeTtlMinutes,
+  };
+}
+
+/** The key the challenge is signed with: the access secret's, and not it. */
+const CHALLENGE_SECRET = crypto
+  .createHmac("sha256", env.jwt.accessSecret)
+  .update("veteride/authenticator-challenge/v1")
+  .digest("hex");
+
+function signChallenge({ role, userId }) {
+  return jwt.sign({ sub: userId, role, stage: "totp" }, CHALLENGE_SECRET, {
+    expiresIn: `${env.authenticator.challengeTtlMinutes}m`,
+  });
+}
+
+/** Back again, or null for anything that does not open cleanly. */
+function readChallenge(token) {
+  try {
+    const payload = jwt.verify(token, CHALLENGE_SECRET);
+    if (payload.stage !== "totp") return null;
+    return { role: payload.role, userId: payload.sub };
+  } catch {
+    return null;
+  }
 }
 
 // POST /auth/register
@@ -172,13 +227,7 @@ async function login({ role, identifier, password }, ip) {
   // No verification check here; drivers can log in before approval.
   // Verification only gates driver-specific operations.
   const idValue = account[cfg.idColumn];
-  const session = await issueSession(role, idValue, ip);
-  return {
-    status: "signed_in",
-    user: stripSensitive(account),
-    role,
-    ...session,
-  };
+  return sessionOrChallenge({ role, userId: idValue, account, ip });
 }
 
 // POST /auth/google
@@ -207,13 +256,12 @@ async function googleSignIn({ idToken }, ip) {
     throw new AppError(403, "ACCOUNT_NOT_ACTIVE", `Account is ${rider.status}`);
   }
 
-  const session = await issueSession("rider", rider.user_id, ip);
-  return {
-    status: "signed_in",
-    user: stripSensitive(rider),
+  return sessionOrChallenge({
     role: "rider",
-    ...session,
-  };
+    userId: rider.user_id,
+    account: rider,
+    ip,
+  });
 }
 
 // POST /auth/google/complete
@@ -230,13 +278,12 @@ async function googleComplete({ idToken, phone }, ip) {
   if (rider) {
     if (!rider.google_id)
       await userRepo.linkGoogleIdToRider(rider.user_id, googleId);
-    const session = await issueSession("rider", rider.user_id, ip);
-    return {
-      status: "signed_in",
-      user: stripSensitive(rider),
+    return sessionOrChallenge({
       role: "rider",
-      ...session,
-    };
+      userId: rider.user_id,
+      account: rider,
+      ip,
+    });
   }
 
   if (await userRepo.isPhoneTaken(phone)) {
@@ -572,12 +619,182 @@ async function verifyEmailCode({ role, identifier, code }, ip) {
     );
   }
 
-  const session = await issueSession(role, userId, ip);
-  return {
-    status: "signed_in",
-    user: stripSensitive(account),
+  return sessionOrChallenge({ role, userId, account, ip });
+}
+
+/* ── The authenticator ─────────────────────────────────────────────────
+ *
+ * Optional, and the person's own decision: an account that never enrols is
+ * never challenged and never sees any of this.
+ */
+
+// ---------------------------------------------------------------------
+// POST /auth/authenticator  — begin an enrolment
+// ---------------------------------------------------------------------
+// Mints a secret and hands back the base32 to type and the otpauth:// URI a
+// QR code carries. NOT armed yet: confirmed_at stays NULL until six digits
+// prove the secret reached the phone, because an enrolment abandoned half way
+// would otherwise lock the account out of itself.
+async function startAuthenticator({ role, userId }) {
+  const cfg = getRoleConfig(role);
+  if (!cfg) throw new AppError(400, "UNKNOWN_ROLE", "Unknown role");
+
+  const existing = await authenticatorRepo.find({ role, userId });
+  if (existing && existing.confirmed_at) {
+    // Not replaced silently: somebody who still has the old authenticator
+    // must turn it off deliberately, and somebody who does not cannot use
+    // this route to walk around it.
+    throw new AppError(
+      409,
+      "AUTHENTICATOR_ALREADY_ON",
+      "An authenticator is already switched on for this account. Turn it off first.",
+    );
+  }
+
+  const account = await userRepo.findByIdForRole(role, userId);
+  if (!account) throw new AppError(404, "ACCOUNT_NOT_FOUND", "No such account");
+
+  const secret = totp.generateSecret();
+  await authenticatorRepo.upsertPending({
     role,
-    ...session,
+    userId,
+    secretSealed: totp.sealSecret(secret),
+  });
+
+  return {
+    status: "authenticator_started",
+    secret,
+    uri: totp.enrolmentUri({
+      secret,
+      account: account.email || account.phone_number || String(userId),
+    }),
+  };
+}
+
+// ---------------------------------------------------------------------
+// POST /auth/authenticator/confirm  — arm it
+// ---------------------------------------------------------------------
+async function confirmAuthenticator({ role, userId, code }) {
+  const row = await authenticatorRepo.find({ role, userId });
+  if (!row) {
+    throw new AppError(
+      409,
+      "AUTHENTICATOR_NOT_STARTED",
+      "Nothing to confirm. Start the setup again.",
+    );
+  }
+  if (row.confirmed_at) {
+    throw new AppError(
+      409,
+      "AUTHENTICATOR_ALREADY_ON",
+      "An authenticator is already switched on for this account.",
+    );
+  }
+
+  const secret = totp.openSecret(row.secret_sealed);
+  // The row exists but will not open: written under a different signing
+  // secret, or tampered with. Nothing can be confirmed against it.
+  if (!secret || !totp.verifyCode(secret, code)) {
+    throw new AppError(401, "WRONG_AUTHENTICATOR_CODE", "That code is not right.");
+  }
+
+  const armed = await authenticatorRepo.confirm({
+    role,
+    userId,
+    secretSealed: row.secret_sealed,
+  });
+  if (!armed) {
+    throw new AppError(
+      409,
+      "AUTHENTICATOR_NOT_STARTED",
+      "That setup is no longer the current one. Start again.",
+    );
+  }
+  return { status: "authenticator_on" };
+}
+
+// ---------------------------------------------------------------------
+// POST /auth/authenticator/verify  — the second step of a sign-in
+// ---------------------------------------------------------------------
+// Takes the challenge from the sign-in that stopped, and six digits. This is
+// the ONLY route that turns a challenge into a session.
+async function verifyAuthenticator({ challengeToken, code }, ip) {
+  const refuse = () =>
+    new AppError(
+      401,
+      "AUTHENTICATOR_CHALLENGE_INVALID",
+      "That sign-in has expired. Sign in again.",
+    );
+
+  const claim = readChallenge(challengeToken);
+  if (!claim) throw refuse();
+
+  const { role, userId } = claim;
+  const row = await authenticatorRepo.find({ role, userId });
+  if (!row || !row.confirmed_at) throw refuse();
+
+  if (Number(row.failed_attempts) >= env.authenticator.maxAttempts) {
+    throw new AppError(
+      429,
+      "AUTHENTICATOR_LOCKED",
+      "Too many wrong codes. Wait for the next code, or sign in again in a few minutes.",
+    );
+  }
+
+  const secret = totp.openSecret(row.secret_sealed);
+  if (!secret || !totp.verifyCode(secret, code)) {
+    const failed = await authenticatorRepo.recordFailure({ role, userId });
+    throw new AppError(
+      401,
+      "WRONG_AUTHENTICATOR_CODE",
+      "That code is not right.",
+      { attempts_remaining: Math.max(0, env.authenticator.maxAttempts - failed) },
+    );
+  }
+
+  const account = await userRepo.findByIdForRole(role, userId);
+  if (!account) throw refuse();
+  if (account.status && account.status !== "active") {
+    throw new AppError(403, "ACCOUNT_NOT_ACTIVE", `Account is ${account.status}`);
+  }
+
+  await authenticatorRepo.recordSuccess({ role, userId });
+  const session = await issueSession(role, userId, ip);
+  return { status: "signed_in", user: stripSensitive(account), role, ...session };
+}
+
+// ---------------------------------------------------------------------
+// DELETE /auth/authenticator  — switch it off
+// ---------------------------------------------------------------------
+// A code is required. Without one, anybody holding a borrowed phone that is
+// still signed in could remove the very thing protecting the account.
+async function disableAuthenticator({ role, userId, code }) {
+  const row = await authenticatorRepo.find({ role, userId });
+  if (!row) return { status: "authenticator_off" };
+
+  if (row.confirmed_at) {
+    const secret = totp.openSecret(row.secret_sealed);
+    if (!secret || !totp.verifyCode(secret, code)) {
+      throw new AppError(401, "WRONG_AUTHENTICATOR_CODE", "That code is not right.");
+    }
+  }
+  // An unconfirmed enrolment is nobody's protection, so it is simply dropped.
+
+  await authenticatorRepo.remove({ role, userId });
+  return { status: "authenticator_off" };
+}
+
+// ---------------------------------------------------------------------
+// GET /auth/authenticator  — is it on?
+// ---------------------------------------------------------------------
+async function authenticatorStatus({ role, userId }) {
+  const row = await authenticatorRepo.find({ role, userId });
+  return {
+    status: "ok",
+    enabled: Boolean(row && row.confirmed_at),
+    pending: Boolean(row && !row.confirmed_at),
+    confirmed_at: row ? row.confirmed_at : null,
+    last_used_at: row ? row.last_used_at : null,
   };
 }
 
@@ -592,4 +809,9 @@ module.exports = {
   resetPassword,
   requestEmailCode,
   verifyEmailCode,
+  startAuthenticator,
+  confirmAuthenticator,
+  verifyAuthenticator,
+  disableAuthenticator,
+  authenticatorStatus,
 };
