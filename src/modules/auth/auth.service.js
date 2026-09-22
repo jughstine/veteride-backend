@@ -694,7 +694,8 @@ async function confirmAuthenticator({ role, userId, code }) {
   const secret = totp.openSecret(row.secret_sealed);
   // The row exists but will not open: written under a different signing
   // secret, or tampered with. Nothing can be confirmed against it.
-  if (!secret || !totp.verifyCode(secret, code)) {
+  const step = secret ? totp.matchCode(secret, code) : null;
+  if (step === null) {
     throw new AppError(401, "WRONG_AUTHENTICATOR_CODE", "That code is not right.");
   }
 
@@ -702,6 +703,10 @@ async function confirmAuthenticator({ role, userId, code }) {
     role,
     userId,
     secretSealed: row.secret_sealed,
+    // Spent by confirming. Otherwise the very digits typed into the setup
+    // screen stay good for another ninety seconds and would walk straight
+    // through the first sign-in challenge.
+    counter: step,
   });
   if (!armed) {
     throw new AppError(
@@ -733,22 +738,47 @@ async function verifyAuthenticator({ challengeToken, code }, ip) {
   const row = await authenticatorRepo.find({ role, userId });
   if (!row || !row.confirmed_at) throw refuse();
 
-  if (Number(row.failed_attempts) >= env.authenticator.maxAttempts) {
+  // A cooling-off that ends by itself. The count trips it and is then put
+  // back to zero; the clock releases it. A count with nothing to clear it
+  // would be a permanent lock, because every route that resets the count is
+  // one a locked-out account can no longer reach.
+  const lockedSeconds = await authenticatorRepo.lockedFor({ role, userId });
+  if (lockedSeconds > 0) {
     throw new AppError(
       429,
       "AUTHENTICATOR_LOCKED",
-      "Too many wrong codes. Wait for the next code, or sign in again in a few minutes.",
+      `Too many wrong codes. Try again in ${Math.ceil(lockedSeconds / 60)} minute(s).`,
+      { retry_after_seconds: lockedSeconds },
     );
   }
 
   const secret = totp.openSecret(row.secret_sealed);
-  if (!secret || !totp.verifyCode(secret, code)) {
-    const failed = await authenticatorRepo.recordFailure({ role, userId });
+  const step = secret ? totp.matchCode(secret, code) : null;
+  if (step === null) {
+    const remaining = await authenticatorRepo.recordFailure({
+      role,
+      userId,
+      maxAttempts: env.authenticator.maxAttempts,
+      lockMinutes: env.authenticator.lockMinutes,
+    });
     throw new AppError(
       401,
       "WRONG_AUTHENTICATOR_CODE",
       "That code is not right.",
-      { attempts_remaining: Math.max(0, env.authenticator.maxAttempts - failed) },
+      { attempts_remaining: remaining },
+    );
+  }
+
+  // Spending the code IS the check. The same six digits are good for ninety
+  // seconds, and a code seen over a shoulder or lifted out of a captured
+  // request must not open a second session inside that window: this refuses
+  // any step already used, and any step before it (RFC 6238 §5.2).
+  const spent = await authenticatorRepo.spendCode({ role, userId, counter: step });
+  if (!spent) {
+    throw new AppError(
+      401,
+      "AUTHENTICATOR_CODE_USED",
+      "That code has already been used. Wait for the next one in your authenticator.",
     );
   }
 
@@ -758,7 +788,6 @@ async function verifyAuthenticator({ challengeToken, code }, ip) {
     throw new AppError(403, "ACCOUNT_NOT_ACTIVE", `Account is ${account.status}`);
   }
 
-  await authenticatorRepo.recordSuccess({ role, userId });
   const session = await issueSession(role, userId, ip);
   return { status: "signed_in", user: stripSensitive(account), role, ...session };
 }

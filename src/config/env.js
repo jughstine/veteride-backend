@@ -112,6 +112,12 @@ module.exports = {
     // a million, and a 90-second window is wide enough for a script to try a
     // great many of them; this count is what actually closes it.
     maxAttempts: parseInt(process.env.AUTHENTICATOR_MAX_ATTEMPTS || "5", 10),
+    // How long the door stays shut once the count runs out. FIFTEEN MINUTES:
+    // long enough to make guessing pointless, short enough that somebody who
+    // simply mistyped is not locked out of their evening. It has to be a
+    // wait rather than a permanent lock — every route that would clear the
+    // count is one a locked-out account can no longer reach.
+    lockMinutes: parseInt(process.env.AUTHENTICATOR_LOCK_MIN || "15", 10),
   },
 
   google: {
