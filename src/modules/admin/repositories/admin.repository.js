@@ -1,5 +1,26 @@
 const crypto = require("crypto");
 const pool = require("../../../config/db");
+
+/**
+ * The kinds the review console counts and lists.
+ *
+ * A DOCUMENT, not a photograph of a face: `profile_photo` is what passengers
+ * see and is deliberately absent, so a driver is never held in the queue over
+ * their avatar. Everything else a driver files is here — if a kind is added
+ * to uploads.schemas.js and forgotten here, it is uploaded, accepted, and
+ * then invisible to the person whose job is to approve it.
+ */
+const REVIEWABLE_KINDS = [
+  "license_photo",
+  "license_back",
+  "or_cr_photo",
+  "nbi_clearance",
+  "vehicle_front",
+  "vehicle_side",
+  "vehicle_plate",
+];
+
+const REVIEWABLE_KINDS_SQL = REVIEWABLE_KINDS.map((k) => `'${k}'`).join(", ");
 const { getRoleConfig } = require("../../auth/repositories/role-tables");
 
 /**
@@ -98,7 +119,7 @@ async function overview() {
        FROM uploads
       WHERE owner_role = 'driver'
         AND deleted_at IS NULL
-        AND kind IN ('license_photo', 'or_cr_photo')
+        AND kind IN (${REVIEWABLE_KINDS_SQL})
         AND review_status = 'pending'`,
   );
 
@@ -371,7 +392,7 @@ async function listPayments({ status, q, limit, offset }) {
 const DOCUMENTS_WHERE = `
   WHERE u.owner_role = 'driver'
     AND u.deleted_at IS NULL
-    AND u.kind IN ('license_photo', 'or_cr_photo')
+    AND u.kind IN (${REVIEWABLE_KINDS_SQL})
     AND (:driverId IS NULL OR u.owner_id = :driverId)
     AND (:status IS NULL OR u.review_status = :status)`;
 
