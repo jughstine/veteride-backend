@@ -198,6 +198,77 @@ async function findOpenNear({
 }
 
 /**
+ * The rides this account has finished with, newest first.
+ *
+ * FINISHED, not "all": a live ride belongs to /trips/mine, which every screen
+ * already reads, and listing it here too would have two screens disagreeing
+ * about which ride is the current one the moment a status changed between the
+ * two requests.
+ *
+ * Role-scoped by column rather than by a flag — `t.user_id` for a passenger,
+ * `t.driver_id` for a driver — so one account cannot read another's history
+ * by asking differently.
+ */
+async function findHistoryFor({ accountId, role, status, limit, offset }) {
+  const column = role === "driver" ? "t.driver_id" : "t.user_id";
+  const [rows] = await pool.query(
+    `SELECT ${TRIP_COLUMNS}, c.full_name AS rider_name
+       FROM trips t
+       JOIN customers c ON c.user_id = t.user_id
+      WHERE ${column} = :accountId
+        AND t.status IN ('completed', 'cancelled')
+        AND (:status IS NULL OR t.status = :status)
+      -- When it ENDED, which is what a history is ordered by. A cancelled
+      -- ride has no dropoff_at and there is no cancelled_at column, so
+      -- updated_at stands in: the cancellation is the last thing that
+      -- happened to that row. requested_at is the floor, for a row nothing
+      -- has touched since it was made.
+      ORDER BY COALESCE(t.dropoff_at, t.updated_at, t.requested_at) DESC
+      LIMIT :limit OFFSET :offset`,
+    { accountId, status: status ?? null, limit, offset },
+  );
+  return rows;
+}
+
+/**
+ * Which vehicle classes have a driver who could actually take a booking from
+ * this point, right now.
+ *
+ * WHAT THIS DELIBERATELY DOES NOT RETURN: who they are, where they are, or
+ * how many. A passenger asking "is there a six-seater near me" is owed yes or
+ * no; a count is a live map of somebody's working day, and it is not needed
+ * to answer the question.
+ *
+ * The conditions are the same ones dispatch itself applies, so an answer of
+ * "yes" is not a different opinion from the offer list: online, approved,
+ * with a recent fix, inside the same box, and a vehicle that classifies.
+ */
+async function availableClassesNear({ lat, lng, radiusKm, fixMinutes }) {
+  const degrees = radiusKm / 111.0;
+  const [rows] = await pool.query(
+    `SELECT v.vehicle_class, v.vehicle_type
+       FROM driver_availability a
+       JOIN driver_positions p ON p.driver_id = a.driver_id
+       JOIN drivers d          ON d.driver_id = a.driver_id
+       JOIN vehicles v         ON v.driver_id = a.driver_id
+      WHERE a.status = 'online'
+        AND d.status = 'active'
+        AND d.verification_status = 'approved'
+        AND p.updated_at > (NOW() - INTERVAL :fixMinutes MINUTE)
+        AND p.lat BETWEEN :south AND :north
+        AND p.lng BETWEEN :west  AND :east`,
+    {
+      fixMinutes,
+      south: lat - degrees,
+      north: lat + degrees,
+      west: lng - degrees,
+      east: lng + degrees,
+    },
+  );
+  return rows;
+}
+
+/**
  * Records that one driver passed on one booking.
  *
  * INSERT ... ON DUPLICATE KEY UPDATE, so the route is idempotent by the
@@ -469,6 +540,8 @@ async function partiesOf(tripId) {
 }
 
 module.exports = {
+  findHistoryFor,
+  availableClassesNear,
   LIVE_STATUSES,
   columnForRole,
   create,

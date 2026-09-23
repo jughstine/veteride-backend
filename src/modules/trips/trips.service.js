@@ -350,6 +350,54 @@ async function current(accountId, role) {
   return row ? decorate(row) : null;
 }
 
+// GET /trips/history — the rides this account has finished with.
+//
+// Paged, because a year of rides is not a screen. The app asks for a page at
+// a time and says when there are more; nothing here returns the whole table
+// because one account's history is unbounded and the phone's memory is not.
+async function history(accountId, role, { status, limit, offset }) {
+  const rows = await tripRepo.findHistoryFor({
+    accountId,
+    role,
+    status,
+    // One extra, so "is there another page" is answered by the query rather
+    // than by a second COUNT(*) over the same rows.
+    limit: limit + 1,
+    offset,
+  });
+  const page = rows.slice(0, limit);
+  return {
+    trips: await Promise.all(page.map((row) => decorate(row))),
+    has_more: rows.length > limit,
+  };
+}
+
+// GET /trips/availability — which classes could take a booking from here.
+//
+// The question a passenger actually has is "if I ask for this, will anybody
+// come?", and until now the only way to find out was to book and wait. It
+// answers yes or no per class and NOTHING else: no count, no positions, no
+// identities. A count would be a live readout of how many people are working
+// a given street, which is not the passenger's to have and is not needed.
+async function availability({ lat, lng }) {
+  const rows = await tripRepo.availableClassesNear({
+    lat,
+    lng,
+    radiusKm: env.rides.offerRadiusKm,
+    fixMinutes: env.rides.positionTtlMinutes,
+  });
+
+  // Every class starts as false, so a class nobody drives is answered
+  // honestly rather than left out and read as "unknown".
+  const available = {};
+  for (const klass of vehicleClass.CLASSES) available[klass] = false;
+  for (const row of rows) {
+    const klass = vehicleClass.classOfVehicle(row);
+    if (klass) available[klass] = true;
+  }
+  return { available };
+}
+
 // GET /trips/:tripId — one ride, for a party to it.
 async function readOne(tripId, accountId, role) {
   const row = await tripRepo.findByIdForParty(tripId, accountId, role);
@@ -883,6 +931,8 @@ async function postMessage(tripId, { accountId, role, body }) {
 }
 
 module.exports = {
+  history,
+  availability,
   book,
   current,
   readOne,

@@ -102,7 +102,26 @@ const postMessage = asyncHandler(async (req, res) => {
   res.status(201).json({ message });
 });
 
+const history = asyncHandler(async (req, res) => {
+  const result = await tripService.history(req.user.id, req.user.role, {
+    status: req.query.status,
+    limit: req.query.limit ?? 20,
+    offset: req.query.offset ?? 0,
+  });
+  res.status(200).json(result);
+});
+
+const availability = asyncHandler(async (req, res) => {
+  const result = await tripService.availability({
+    lat: Number(req.query.lat),
+    lng: Number(req.query.lng),
+  });
+  res.status(200).json(result);
+});
+
 module.exports = {
+  history,
+  availability,
   book,
   current,
   readOne,

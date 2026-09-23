@@ -24,13 +24,23 @@ const CLASSES = ["motorcycle", "car", "truck6"];
 const LABELS = {
   motorcycle: "motorcycle",
   car: "car",
-  truck6: "6-wheeler",
+  // The owner's word for it, 23 Sep 2026. The wire value stays `truck6`
+  // because rows and app builds already carry it, and renaming a class
+  // orphans every vehicle registered under the old spelling — but what a
+  // person is shown is a vehicle with six seats, not six wheels.
+  truck6: "6-seater",
 };
 
 const ALIASES = {
   motorcycle: ["motorcycle", "motorbike", "moto", "scooter", "2-wheel", "2w"],
   car: ["car", "sedan", "suv", "hatchback", "mpv", "van", "4-wheel", "4w"],
-  truck6: ["truck6", "truck", "6-wheel", "6-wheeler", "6w"],
+  truck6: [
+    "truck6", "truck", "6-wheel", "6-wheeler", "6w",
+    // What the app and the console now say. A driver whose vehicle was
+    // typed in as "6 seater" and a booking that asks for a "6-seater" are
+    // the same class, and neither should have to know the older spelling.
+    "6-seater", "6-seat", "6seater", "6-seats", "sixseater",
+  ],
 };
 
 /** alias -> class, built once rather than scanned per request. */
