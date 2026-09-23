@@ -25,6 +25,23 @@ router.get(
 // --- The ride this account is in the middle of, either side of it. ---
 router.get("/mine", controller.current);
 
+// --- What this account has finished with. Before /:tripId, or "history" is
+//     read as a trip id. ---
+router.get(
+  "/history",
+  validateQuery(schemas.historyQuerySchema),
+  controller.history,
+);
+
+// --- Which classes could take a booking from a point, yes or no. Before
+//     /:tripId for the same reason. ---
+router.get(
+  "/availability",
+  requireRole("rider"),
+  validateQuery(schemas.availabilityQuerySchema),
+  controller.availability,
+);
+
 // --- Booking is the passenger's. ---
 router.post(
   "/",

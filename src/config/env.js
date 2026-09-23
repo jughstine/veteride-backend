@@ -177,6 +177,14 @@ module.exports = {
     // arrived. Computed, not declared: there is no status for it.
     atPickupMetres: parseInt(process.env.AT_PICKUP_METRES || "120", 10),
 
+    // How old a driver's last fix may be and still count as "near me" when a
+    // passenger asks which vehicles are available. FIVE MINUTES: a phone that
+    // has not reported in longer than that is a driver who has closed the app
+    // or lost signal, and answering "yes, a six-seater is here" on the
+    // strength of where somebody was half an hour ago is a promise nobody
+    // made.
+    positionTtlMinutes: parseInt(process.env.POSITION_TTL_MIN || "5", 10),
+
     // Wrong PINs allowed before the handover is locked and the passenger
     // has to be asked to re-read it.
     pinAttempts: parseInt(process.env.PIN_ATTEMPTS || "5", 10),

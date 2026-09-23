@@ -101,7 +101,25 @@ const messageSchema = z.object({
   body: z.string().trim().min(1).max(2000),
 });
 
+// GET /trips/history
+const historyQuerySchema = z.object({
+  // Finished rides only, so these are the only two worth asking for.
+  status: z.enum(["completed", "cancelled"]).optional(),
+  // A page, with a ceiling. Without one, `limit=100000` is a way to make the
+  // server read somebody's entire history into memory on request.
+  limit: z.coerce.number().int().min(1).max(50).optional(),
+  offset: z.coerce.number().int().min(0).max(100000).optional(),
+});
+
+// GET /trips/availability
+const availabilityQuerySchema = z.object({
+  lat: z.coerce.number().min(-90).max(90),
+  lng: z.coerce.number().min(-180).max(180),
+});
+
 module.exports = {
+  historyQuerySchema,
+  availabilityQuerySchema,
   bookSchema,
   tripIdParams,
   openQuerySchema,
