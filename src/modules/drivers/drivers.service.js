@@ -83,6 +83,26 @@ async function setAvailability(driverId, online) {
     throw new AppError(403, "NOT_VERIFIED", "Your documents are not approved yet");
   }
 
+  // And enough in the wallet to be charged for the ride they are about to
+  // take. Refused HERE, at the switch, rather than at completion: a driver
+  // told at the end of a ride that they cannot be charged has a passenger
+  // in the seat and no way to fix it. Its own code, so the app can name the
+  // reason and send them to the top-up screen instead of guessing at a 403.
+  //
+  // Only on the way ON. A driver who runs low mid-shift finishes the ride
+  // they are carrying and goes offline normally.
+  if (online) {
+    const balance = Number(driver.wallet_balance ?? 0);
+    const floor = env.rides.minWalletToGoOnline;
+    if (balance < floor) {
+      throw new AppError(
+        403,
+        "WALLET_TOO_LOW",
+        `Top up to at least PHP ${floor} before going online.`,
+      );
+    }
+  }
+
   // A ride nobody will ever finish holds its driver at 'on_trip' for ever;
   // the sweep is what stops that being permanent, and it runs here because
   // this is the request such a driver makes when they find they are stuck.
