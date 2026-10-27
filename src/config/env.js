@@ -211,12 +211,27 @@ module.exports = {
 
     // The platform's cut of a fare, as a percentage.
     //
-    // TEN, the rate the owner named (15 Sep 2026): the platform keeps 10% of
-    // the fare and the driver earns the rest, and a tip is never part of it —
-    // a gift carries no commission. Still overridable with COMMISSION_PCT so
-    // the rate stays a setting and not a recompile, but no longer zero: a
-    // fare that split nothing was a driver's whole fare and a platform that
-    // ran for free, which is not the arrangement.
-    commissionPercent: parseFloat(process.env.COMMISSION_PCT || "10"),
+    // TWELVE since 26 Oct 2026, the owner's rate — ten before that
+    // (15 Sep 2026). The platform keeps 12% of the fare and the driver earns
+    // the rest, and a tip is never part of it: a gift carries no commission.
+    // Still overridable with COMMISSION_PCT so the rate stays a setting and
+    // not a recompile, but no longer zero: a fare that split nothing was a
+    // driver's whole fare and a platform that ran for free, which is not the
+    // arrangement.
+    //
+    // THE APP IS ALREADY ON 12. Until this moved, a driver's offer card
+    // quoted 88% of the fare while this server credited 90% — understating
+    // their pay, which is the safe direction to be wrong in and still wrong.
+    commissionPercent: parseFloat(process.env.COMMISSION_PCT || "12"),
+
+    // What a driver must hold in their wallet to go online.
+    //
+    // The commission is taken out of a prepaid float, so a driver at zero
+    // cannot be charged for the ride they are about to take. Refusing at
+    // the switch tells them before their shift; refusing at completion
+    // would strand a passenger already in the seat.
+    //
+    // Roughly four rides of headroom at a PHP 90 fare. The owner's to set.
+    minWalletToGoOnline: parseFloat(process.env.MIN_WALLET_ONLINE || "50"),
   },
 };

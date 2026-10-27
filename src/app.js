@@ -5,6 +5,7 @@ const cors = require("cors");
 const authRoutes = require("./modules/auth/auth.routes");
 const profileRoutes = require("./modules/profile/profile.routes");
 const driversRoutes = require("./modules/drivers/drivers.routes");
+const paymongoWebhookRoutes = require("./modules/wallet/webhook.routes");
 const tripsRoutes = require("./modules/trips/trips.routes");
 const uploadsRoutes = require("./modules/uploads/uploads.routes");
 const adminRoutes = require("./modules/admin/admin.routes");
@@ -18,6 +19,11 @@ app.set("trust proxy", 1); // needed for req.ip / rate-limit to see the real cli
 
 app.use(helmet());
 app.use(cors());
+// BEFORE express.json(): PayMongo signs the RAW bytes, and a body that has
+// been parsed and re-serialised no longer matches its own signature. This
+// router brings its own express.raw().
+app.use("/webhooks", paymongoWebhookRoutes);
+
 app.use(express.json({ limit: "1mb" }));
 
 app.get("/health", (req, res) => res.status(200).json({ status: "ok" }));

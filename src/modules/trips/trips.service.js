@@ -10,6 +10,8 @@ const userRepo = require("../auth/repositories/user.repository");
 const availabilityRepo = require("../drivers/repositories/availability.repository");
 const vehicleRepo = require("../drivers/repositories/vehicle.repository");
 const vehicleClass = require("../drivers/vehicle-class");
+const walletService = require("../wallet/wallet.service");
+const logger = require("../../utils/logger");
 const paymentMethods = require("./payment-methods");
 const fares = require("./fares");
 const realtime = require("../../realtime/stream");
@@ -699,6 +701,29 @@ async function recordFare(trip) {
   if (!trip) return null;
   const fare = num(trip.final_fare) ?? 0;
   const commission = fares.commissionOn(fare);
+
+  // The platform's cut comes OUT OF THE DRIVER'S FLOAT, because the
+  // passenger settles the fare with the driver directly and VeteRide never
+  // touches it (owner, 26 Oct 2026).
+  //
+  // Off the FINAL fare and at COMPLETION, not the estimate at booking: this
+  // server re-prices from its own tariff, so a cut taken at booking would
+  // need a refund on every cancellation and a rebate whenever the fare
+  // moved. Here, neither case exists.
+  //
+  // Not awaited into the caller's failure path. The ride IS over; a wallet
+  // that would not take the debit must not undo a completion the passenger
+  // and driver have both already seen. One debit per trip is guaranteed by
+  // the ledger's unique key, so a retry cannot charge twice.
+  if (trip.driver_id) {
+    walletService
+      .chargeRideCommission({
+        driverId: trip.driver_id,
+        tripId: trip.trip_id,
+        commissionPesos: commission,
+      })
+      .catch((error) => logger.error?.(`commission debit failed: ${error.message}`));
+  }
 
   return paymentRepo.recordForTrip({
     tripId: trip.trip_id,
