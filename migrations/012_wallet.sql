@@ -17,20 +17,29 @@
 -- a number nobody can explain. Every movement gets a row, and the balance is
 -- what the rows add up to.
 --
--- Run once:  mysql dbveteride < migrations/012_wallet.sql
+-- driver_id is BIGINT UNSIGNED, matching drivers.driver_id, and the foreign
+-- keys are left commented out — both the way every table since 001 does it.
+-- The first draft declared INT and a live FK, and MySQL refused the file
+-- outright: ERROR 3780, "Referencing column 'driver_id' and referenced
+-- column 'driver_id' in foreign key constraint are incompatible".
+--
+-- MySQL 8. Run once:  mysql -u USER -p DBNAME < migrations/012_wallet.sql
 
 /* ── One attempt to put money in ─────────────────────────────────── */
 CREATE TABLE IF NOT EXISTS driver_topups (
-  topup_id        CHAR(36)      NOT NULL PRIMARY KEY,
-  driver_id       INT           NOT NULL,
+  topup_id        CHAR(36)        NOT NULL,
+  -- Matches drivers.driver_id exactly. Never a bare "account id": a
+  -- customer and a driver may share a number, and a wallet credited to the
+  -- wrong table is somebody else's money.
+  driver_id       BIGINT UNSIGNED NOT NULL,
 
   -- Pesos, matching drivers.wallet_balance. PayMongo works in centavos and
   -- converts at its own edge, in one place, rather than every caller
   -- remembering which unit it is holding.
-  amount          DECIMAL(10,2) NOT NULL,
+  amount          DECIMAL(10,2)   NOT NULL,
 
   -- 'gcash' | 'paymaya' | 'grab_pay'
-  method          VARCHAR(32)   NOT NULL,
+  method          VARCHAR(32)     NOT NULL,
 
   -- pending    the row exists; the driver has not paid
   -- chargeable they authorised in the wallet app; we are taking the money
@@ -41,52 +50,59 @@ CREATE TABLE IF NOT EXISTS driver_topups (
   -- The PayMongo source (src_...). The webhook arrives knowing only this,
   -- so it is the key the callback looks the row up by, and it is UNIQUE
   -- because two rows answering to one source is an ambiguity about money.
-  source_ref      VARCHAR(255)  NULL UNIQUE,
+  source_ref      VARCHAR(255)    NULL,
   -- The payment (pay_...), once the source has actually been charged.
-  payment_ref     VARCHAR(255)  NULL,
+  payment_ref     VARCHAR(255)    NULL,
 
-  checkout_url    TEXT          NULL,
-  failure_reason  TEXT          NULL,
+  checkout_url    TEXT            NULL,
+  failure_reason  VARCHAR(500)    NULL,
 
-  created_at      TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  paid_at         TIMESTAMP     NULL,
+  created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  paid_at         DATETIME        NULL,
 
-  CONSTRAINT fk_driver_topups_driver
-    FOREIGN KEY (driver_id) REFERENCES drivers(driver_id) ON DELETE CASCADE,
-  INDEX idx_driver_topups_driver (driver_id, created_at DESC)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  PRIMARY KEY (topup_id),
+  UNIQUE KEY driver_topups_source_uk (source_ref),
+  KEY driver_topups_driver_idx (driver_id, created_at DESC)
+
+  -- , CONSTRAINT driver_topups_driver_fk FOREIGN KEY (driver_id) REFERENCES drivers(driver_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 /* ── Every movement of the float ─────────────────────────────────── */
 CREATE TABLE IF NOT EXISTS wallet_ledger (
-  entry_id      CHAR(36)      NOT NULL PRIMARY KEY,
-  driver_id     INT           NOT NULL,
+  entry_id      CHAR(36)        NOT NULL,
+  driver_id     BIGINT UNSIGNED NOT NULL,
 
   kind ENUM('topup','commission','adjustment') NOT NULL,
 
   -- SIGNED: positive puts money in, negative takes it out. Signed rather
   -- than a magnitude plus a direction, so that SUM(amount) equals the
   -- balance without anybody having to remember which kinds are negative.
-  amount        DECIMAL(10,2) NOT NULL,
+  amount        DECIMAL(10,2)   NOT NULL,
 
   -- The balance AFTER this row, so a statement reads top to bottom without
   -- re-adding every earlier line.
-  balance_after DECIMAL(10,2) NOT NULL,
+  balance_after DECIMAL(10,2)   NOT NULL,
 
-  trip_id       CHAR(36)      NULL,
-  topup_id      CHAR(36)      NULL,
-  note          VARCHAR(255)  NULL,
-  created_at    TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  trip_id       CHAR(36)        NULL,
+  topup_id      CHAR(36)        NULL,
+  note          VARCHAR(255)    NULL,
+  created_at    DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-  CONSTRAINT fk_wallet_ledger_driver
-    FOREIGN KEY (driver_id) REFERENCES drivers(driver_id) ON DELETE CASCADE,
+  PRIMARY KEY (entry_id),
 
   -- ONE CREDIT PER TOP-UP, and one debit per trip. These two indexes are
   -- the whole defence against double-counting money, and they are indexes
   -- rather than checks in code because PayMongo retries webhooks and two
   -- deliveries can arrive at once. A credit invented by a network retry is
   -- indistinguishable, afterwards, from a credit somebody paid for.
-  UNIQUE KEY uq_wallet_ledger_topup (topup_id),
-  UNIQUE KEY uq_wallet_ledger_trip_commission (trip_id, kind),
+  --
+  -- Both columns are NULL on the rows they do not apply to, and MySQL lets
+  -- a unique index hold any number of NULLs — so commission rows do not
+  -- collide with each other on topup_id, nor top-ups on trip_id.
+  UNIQUE KEY wallet_ledger_topup_uk (topup_id),
+  UNIQUE KEY wallet_ledger_trip_commission_uk (trip_id, kind),
 
-  INDEX idx_wallet_ledger_driver (driver_id, created_at DESC)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  KEY wallet_ledger_driver_idx (driver_id, created_at DESC)
+
+  -- , CONSTRAINT wallet_ledger_driver_fk FOREIGN KEY (driver_id) REFERENCES drivers(driver_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
