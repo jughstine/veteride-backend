@@ -209,6 +209,27 @@ async function creditFromIntent({ intentId, paymentId }) {
 }
 
 /**
+ * A Payment Intent that did not go through: Maya or QR Ph refused, expired,
+ * or the driver backed out.
+ *
+ * Writes it down rather than leaving the row "pending" for ever. A top-up
+ * stuck pending is not harmless - it is a driver looking at a screen that
+ * says something is still on its way when nothing is.
+ *
+ * NEVER overrides a paid row. `payment.failed` can arrive after a retry has
+ * already succeeded, and PayMongo gives no ordering guarantee; markTopupFailed
+ * carries its own `status <> 'paid'` guard for exactly that reason. Money
+ * that landed stays landed.
+ */
+async function failFromIntent({ intentId, reason }) {
+  const topup = await walletRepo.findTopupBySource(intentId);
+  if (!topup) return { handled: false };
+  if (topup.status === "paid") return { handled: true, already: "paid" };
+  await walletRepo.markTopupFailed(topup.topup_id, reason || "Payment failed");
+  return { handled: true, failed: true };
+}
+
+/**
  * The platform's cut, taken when a ride completes.
  *
  * Off the FINAL fare, not the estimate at booking (owner, 26 Oct 2026):
@@ -233,5 +254,6 @@ module.exports = {
   startTopup,
   creditFromSource,
   creditFromIntent,
+  failFromIntent,
   chargeRideCommission,
 };
