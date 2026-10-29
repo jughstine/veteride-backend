@@ -20,7 +20,7 @@ const startTopupSchema = z.object({
 
   // The three e-wallets PayMongo's Sources API carries. Cards go through a
   // different PayMongo flow entirely and are not offered here yet.
-  method: z.enum(["gcash", "paymaya", "grab_pay"]),
+  method: z.enum(["gcash", "paymaya", "grab_pay", "qrph"]),
 });
 
 module.exports = { startTopupSchema };

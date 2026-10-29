@@ -40,6 +40,12 @@ async function wallet(driverId) {
     // BEFORE the switch is refused rather than explaining a 403 afterwards.
     min_online: env.rides.minWalletToGoOnline,
     gateway: paymongo.enabled() ? "paymongo" : null,
+    // Which wallets to offer, and how each is paid. Sent so the app renders
+    // what this server can actually take instead of keeping its own list:
+    // a build in a driver's pocket then follows a change here without being
+    // reinstalled. Empty when no gateway is configured, so a screen with no
+    // way to pay never draws a button.
+    methods: paymongo.enabled() ? paymongo.METHODS : [],
   };
 }
 
@@ -85,6 +91,8 @@ async function startTopup({ driverId, amount, method, origin }) {
   // top-up used to become a 502.
   let gatewayRef = null;
   let checkoutUrl = null;
+  let flow = "redirect";
+  let qrImage = null;
   try {
     if (paymongo.INTENT_WALLETS.has(method)) {
       const started = await paymongo.startIntentCheckout({
@@ -94,6 +102,8 @@ async function startTopup({ driverId, amount, method, origin }) {
       });
       gatewayRef = started.intentId;
       checkoutUrl = started.checkoutUrl;
+      flow = started.flow;
+      qrImage = started.qrImage;
     } else {
       const source = await paymongo.createSource({
         amount: pesos,
@@ -110,7 +120,9 @@ async function startTopup({ driverId, amount, method, origin }) {
     throw new AppError(502, "GATEWAY_ERROR", error.message);
   }
 
-  if (!gatewayRef || !checkoutUrl) {
+  // A QR Ph top-up has no URL by design - the code is the checkout. So what
+  // is required is a reference plus ONE of the two ways to pay.
+  if (!gatewayRef || !(checkoutUrl || qrImage)) {
     throw new AppError(502, "GATEWAY_ERROR", "The payment gateway did not return a checkout.");
   }
   const sourceId = gatewayRef;
@@ -128,7 +140,14 @@ async function startTopup({ driverId, amount, method, origin }) {
     amount_minor: toMinor(topup.amount),
     method: topup.method,
     status: topup.status,
+    // Which of the two the app should do, said rather than inferred from
+    // whether a field happens to be null.
+    flow,
     checkout_url: checkoutUrl,
+    // A PNG data URI for QR Ph, null for the rest. Not stored anywhere: it
+    // is one code for one attempt, and a driver who closes the sheet starts
+    // another rather than reusing a stale one.
+    qr_image: qrImage,
   };
 }
 
