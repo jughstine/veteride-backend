@@ -20,7 +20,14 @@ const AppError = require("../../utils/AppError");
  *     driver actually paid.
  */
 
-const MIN_TOPUP = paymongo.MIN_PESOS;      // 100
+// The smallest top-up VeteRide asks for. Env-driven like MAX_TOPUP_PESOS so
+// the owner can lower it for a live test - a real PHP 1 payment through a
+// real wallet - and put it back without a deploy. Never below the gateway's
+// own floor, whatever the env says.
+const MIN_TOPUP = Math.max(
+  paymongo.MIN_PESOS,
+  Number(process.env.MIN_TOPUP_PESOS || 100),
+);
 const MAX_TOPUP = Number(process.env.MAX_TOPUP_PESOS || 3000);
 
 /** Centavos, like every other money figure the app reads off this server. */

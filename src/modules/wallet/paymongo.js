@@ -65,8 +65,19 @@ const INTENT_WALLETS = new Set(["paymaya", "qrph"]);
 /** Every wallet this server will take, whichever flow it needs. */
 const WALLETS = new Set([...SOURCE_WALLETS, ...INTENT_WALLETS]);
 
-/** PayMongo's own floor for an e-wallet source: PHP 100.00. */
-const MIN_PESOS = 100;
+/**
+ * The gateway's own floor, which is NOT PHP 100.
+ *
+ * This said 100 and called it "PayMongo's own floor". It is not: probed
+ * against the live API on 29 Oct 2026, both `/v1/sources` (gcash) and
+ * `/v1/payment_intents` (qrph) returned 200 for PHP 1, 5, 20, 50 and 99.
+ * The 100 was a guess of mine that had been sitting here as a fact, and it
+ * made a PHP 1 test top-up impossible for no reason.
+ *
+ * This is the hard floor only. What VeteRide actually asks a driver for is
+ * MIN_TOPUP in wallet.service.js, which is the owner's to set.
+ */
+const MIN_PESOS = 1;
 
 function secret() {
   return process.env.PAYMONGO_SECRET_KEY || "";
