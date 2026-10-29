@@ -26,13 +26,20 @@
  *   4. createPaymentFromSource() actually takes the money
  *   5. `payment.paid` confirms it
  *
- * PAYMENT INTENTS — paymaya:
+ * PAYMENT INTENTS — paymaya, qrph:
  *
  *   1. createPaymentIntent()     -> an intent and its client_key
- *   2. createPaymentMethod()     -> a paymaya method
- *   3. attachPaymentIntent()     -> next_action.redirect.url, the checkout
- *   4. driver authorises in Maya
+ *   2. createPaymentMethod()     -> a paymaya or qrph method
+ *   3. attach                    -> a next_action, and WHICH KIND DIFFERS
+ *   4. driver authorises
  *   5. PayMongo calls our webhook with `payment.paid`
+ *
+ * Step 3 is the one that catches people. Maya answers
+ * `next_action.type = "redirect"` with a URL to open. QR Ph answers
+ * `next_action.type = "consume_qr"` with no URL at all — a PNG data URI the
+ * driver has to SCAN, in `next_action.code.image_url`. Reading `.redirect.url`
+ * for a QR Ph intent gets null, which is why the flow is named in the reply
+ * rather than guessed at by the phone.
  *
  * Note what step 4-5 does NOT include: there is no createPaymentFrom… call.
  * An attached intent takes the money itself, so Maya credits on `payment.paid`
@@ -53,7 +60,7 @@ const API = "https://api.paymongo.com/v1";
  * and an if: the split is PayMongo's and it is the thing that was got wrong.
  */
 const SOURCE_WALLETS = new Set(["gcash", "grab_pay"]);
-const INTENT_WALLETS = new Set(["paymaya"]);
+const INTENT_WALLETS = new Set(["paymaya", "qrph"]);
 
 /** Every wallet this server will take, whichever flow it needs. */
 const WALLETS = new Set([...SOURCE_WALLETS, ...INTENT_WALLETS]);
@@ -182,14 +189,24 @@ async function startIntentCheckout({ amount, type, returnUrl }) {
     client_key: clientKey,
     return_url: returnUrl,
   });
-  const checkoutUrl = attached?.data?.attributes?.next_action?.redirect?.url || null;
-  if (!checkoutUrl) {
-    // An intent that attached without a redirect is one the driver has no
-    // way to pay: better a refusal now than a top-up row nobody can finish.
-    const status = attached?.data?.attributes?.status || "unknown";
-    throw new Error(`Maya did not return a checkout (status ${status})`);
+  const action = attached?.data?.attributes?.next_action || {};
+  const status = attached?.data?.attributes?.status || "unknown";
+
+  if (action.type === "consume_qr") {
+    // QR Ph. There is nowhere to send the driver - the PNG IS the checkout.
+    const qrImage = action.code?.image_url || null;
+    if (!qrImage) throw new Error(`QR Ph did not return a code (status ${status})`);
+    return { intentId, flow: "qr", checkoutUrl: null, qrImage };
   }
-  return { intentId, checkoutUrl };
+
+  const checkoutUrl = action.redirect?.url || null;
+  if (!checkoutUrl) {
+    // An intent that attached with neither a redirect nor a QR is one the
+    // driver has no way to pay: better a refusal now than a top-up row
+    // nobody can finish.
+    throw new Error(`${type} did not return a checkout (status ${status})`);
+  }
+  return { intentId, flow: "redirect", checkoutUrl, qrImage: null };
 }
 
 /**
@@ -237,8 +254,22 @@ function verifyWebhook({ header, rawBody, toleranceSeconds = 300 }) {
   return { ok: true };
 }
 
+/**
+ * What the app should offer, and how each one is paid.
+ *
+ * Here rather than in the phone: when a wallet is added or PayMongo drops
+ * one, every build already out in the world follows without being rebuilt.
+ * The app renders this list; it does not keep its own.
+ */
+const METHODS = [
+  { key: "gcash", label: "GCash", flow: "redirect" },
+  { key: "paymaya", label: "Maya", flow: "redirect" },
+  { key: "qrph", label: "QR Ph", flow: "qr" },
+];
+
 module.exports = {
   WALLETS,
+  METHODS,
   SOURCE_WALLETS,
   INTENT_WALLETS,
   MIN_PESOS,
