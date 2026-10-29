@@ -79,25 +79,41 @@ async function startTopup({ driverId, amount, method, origin }) {
     throw new AppError(400, "BAD_METHOD", `Unsupported payment method: ${method}`);
   }
 
-  let source;
+  // Which of PayMongo's two flows this wallet needs. GCash and GrabPay are
+  // Sources; Maya is Payment Intents and answers Sources with
+  // "The source_type passed paymaya is invalid" — which is how every Maya
+  // top-up used to become a 502.
+  let gatewayRef = null;
+  let checkoutUrl = null;
   try {
-    source = await paymongo.createSource({
-      amount: pesos,
-      type: method,
-      successUrl: `${origin}/wallet/topup-done?ok=1`,
-      failedUrl: `${origin}/wallet/topup-done?ok=0`,
-    });
+    if (paymongo.INTENT_WALLETS.has(method)) {
+      const started = await paymongo.startIntentCheckout({
+        amount: pesos,
+        type: method,
+        returnUrl: `${origin}/wallet/topup-done?ok=1`,
+      });
+      gatewayRef = started.intentId;
+      checkoutUrl = started.checkoutUrl;
+    } else {
+      const source = await paymongo.createSource({
+        amount: pesos,
+        type: method,
+        successUrl: `${origin}/wallet/topup-done?ok=1`,
+        failedUrl: `${origin}/wallet/topup-done?ok=0`,
+      });
+      gatewayRef = source?.data?.id || null;
+      checkoutUrl = source?.data?.attributes?.redirect?.checkout_url || null;
+    }
   } catch (error) {
     // The gateway's own sentence, not a stack trace: "the amount is below
     // the minimum" is something a driver can act on.
     throw new AppError(502, "GATEWAY_ERROR", error.message);
   }
 
-  const sourceId = source?.data?.id || null;
-  const checkoutUrl = source?.data?.attributes?.redirect?.checkout_url || null;
-  if (!sourceId || !checkoutUrl) {
+  if (!gatewayRef || !checkoutUrl) {
     throw new AppError(502, "GATEWAY_ERROR", "The payment gateway did not return a checkout.");
   }
+  const sourceId = gatewayRef;
 
   const topup = await walletRepo.createTopup({
     driverId,
@@ -150,6 +166,30 @@ async function creditFromSource(sourceId) {
 }
 
 /**
+ * Maya's half: credit a top-up whose Payment Intent has been paid.
+ *
+ * NO createPaymentFrom… call here, unlike [creditFromSource]. An attached
+ * intent collects the money itself, so by the time `payment.paid` arrives the
+ * charge has already happened — taking it again would charge the driver
+ * twice. All that is left is to write it down.
+ *
+ * Looked up by the intent id, which is what `startTopup` stored as the
+ * top-up's gateway reference, so the same unique key makes a retried webhook
+ * a no-op exactly as it does for a source.
+ */
+async function creditFromIntent({ intentId, paymentId }) {
+  const topup = await walletRepo.findTopupBySource(intentId);
+  if (!topup) return { handled: false };
+  if (topup.status === "paid") return { handled: true, already: true };
+
+  const balance = await walletRepo.settleTopup({
+    topupId: topup.topup_id,
+    paymentRef: paymentId || null,
+  });
+  return { handled: true, credited: balance !== null, balance_minor: toMinor(balance) };
+}
+
+/**
  * The platform's cut, taken when a ride completes.
  *
  * Off the FINAL fare, not the estimate at booking (owner, 26 Oct 2026):
@@ -173,5 +213,6 @@ module.exports = {
   ledger,
   startTopup,
   creditFromSource,
+  creditFromIntent,
   chargeRideCommission,
 };

@@ -50,8 +50,34 @@ router.post(
 
     try {
       if (type === "source.chargeable" && resource?.id) {
+        // GCash and GrabPay. The source is authorised; the charge is ours to
+        // make, and creditFromSource makes it.
         const outcome = await walletService.creditFromSource(resource.id);
         logger.info?.(`paymongo source.chargeable ${resource.id}: ${JSON.stringify(outcome)}`);
+      } else if (type === "payment.paid") {
+        // Maya. A Payment Intent has already collected the money, so there
+        // is nothing to charge - only a balance to move. The intent id is
+        // what the top-up was stored against, and PayMongo puts it on the
+        // payment rather than at the top of the event.
+        const intentId =
+          resource?.attributes?.payment_intent_id ||
+          resource?.attributes?.data?.payment_intent_id ||
+          null;
+        if (intentId) {
+          const outcome = await walletService.creditFromIntent({
+            intentId,
+            paymentId: resource.id || null,
+          });
+          logger.info?.(`paymongo payment.paid ${intentId}: ${JSON.stringify(outcome)}`);
+        } else {
+          // A GCash payment.paid also lands here: it is the confirmation of
+          // the charge creditFromSource already made, and carries no intent.
+          // Nothing to do, and nothing wrong.
+          logger.info?.(`paymongo payment.paid with no intent (${resource?.id}) ignored`);
+        }
+      } else if (type === "payment.failed") {
+        const intentId = resource?.attributes?.payment_intent_id || null;
+        logger.warn?.(`paymongo payment.failed ${intentId || resource?.id}`);
       }
     } catch (error) {
       // Logged and swallowed: a 500 here makes PayMongo retry, and the

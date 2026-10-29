@@ -6,6 +6,7 @@ const authRoutes = require("./modules/auth/auth.routes");
 const profileRoutes = require("./modules/profile/profile.routes");
 const driversRoutes = require("./modules/drivers/drivers.routes");
 const paymongoWebhookRoutes = require("./modules/wallet/webhook.routes");
+const walletReturnRoutes = require("./modules/wallet/return.routes");
 const tripsRoutes = require("./modules/trips/trips.routes");
 const uploadsRoutes = require("./modules/uploads/uploads.routes");
 const adminRoutes = require("./modules/admin/admin.routes");
@@ -28,6 +29,9 @@ app.use(express.json({ limit: "1mb" }));
 
 app.get("/health", (req, res) => res.status(200).json({ status: "ok" }));
 
+// PayMongo sends the driver's browser here after they pay. Serving a
+// page rather than the API 404 they used to land on.
+app.use("/wallet", walletReturnRoutes);
 app.use("/auth", authRoutes);
 app.use("/me", profileRoutes);
 app.use("/drivers", driversRoutes);
