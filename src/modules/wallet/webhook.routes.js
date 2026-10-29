@@ -76,8 +76,21 @@ router.post(
           logger.info?.(`paymongo payment.paid with no intent (${resource?.id}) ignored`);
         }
       } else if (type === "payment.failed") {
+        // Written down, not just logged. A top-up left "pending" for ever is
+        // a driver watching a screen that says their money is on its way.
         const intentId = resource?.attributes?.payment_intent_id || null;
-        logger.warn?.(`paymongo payment.failed ${intentId || resource?.id}`);
+        if (intentId) {
+          const outcome = await walletService.failFromIntent({
+            intentId,
+            reason:
+              resource?.attributes?.failed_message ||
+              resource?.attributes?.failed_code ||
+              "The payment did not go through",
+          });
+          logger.warn?.(`paymongo payment.failed ${intentId}: ${JSON.stringify(outcome)}`);
+        } else {
+          logger.warn?.(`paymongo payment.failed with no intent (${resource?.id})`);
+        }
       }
     } catch (error) {
       // Logged and swallowed: a 500 here makes PayMongo retry, and the
