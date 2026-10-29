@@ -52,7 +52,7 @@ async function wallet(driverId) {
     // a build in a driver's pocket then follows a change here without being
     // reinstalled. Empty when no gateway is configured, so a screen with no
     // way to pay never draws a button.
-    methods: paymongo.enabled() ? paymongo.METHODS : [],
+    methods: paymongo.enabled() ? paymongo.enabledMethods() : [],
   };
 }
 
@@ -91,6 +91,17 @@ async function startTopup({ driverId, amount, method, origin }) {
   if (!paymongo.WALLETS.has(method)) {
     throw new AppError(400, "BAD_METHOD", `Unsupported payment method: ${method}`);
   }
+  // Offered is not the same as supported. A method switched off for this
+  // account must be refused here, in a 400 the app can read, rather than
+  // sent to PayMongo to come back as a 502 that Cloudflare turns into
+  // "error code: 502" and the driver reads as "Could not reach VeteRide".
+  if (!paymongo.enabledMethods().some((m) => m.key === method)) {
+    throw new AppError(
+      400,
+      "METHOD_UNAVAILABLE",
+      "That way of paying is not switched on yet. Please pick another.",
+    );
+  }
 
   // Which of PayMongo's two flows this wallet needs. GCash and GrabPay are
   // Sources; Maya is Payment Intents and answers Sources with
@@ -124,7 +135,17 @@ async function startTopup({ driverId, amount, method, origin }) {
   } catch (error) {
     // The gateway's own sentence, not a stack trace: "the amount is below
     // the minimum" is something a driver can act on.
-    throw new AppError(502, "GATEWAY_ERROR", error.message);
+    //
+    // A refusal (PayMongo answered 4xx) comes back as 400, not 502. Two
+    // reasons: it is not a bad gateway - the gateway answered, clearly - and
+    // a 5xx body is replaced by Cloudflare with its own error page, so the
+    // explanation is lost exactly when somebody needs it. 4xx passes through.
+    const refused = Number(error.status) >= 400 && Number(error.status) < 500;
+    throw new AppError(
+      refused ? 400 : 502,
+      refused ? "GATEWAY_REFUSED" : "GATEWAY_ERROR",
+      error.message,
+    );
   }
 
   // A QR Ph top-up has no URL by design - the code is the checkout. So what

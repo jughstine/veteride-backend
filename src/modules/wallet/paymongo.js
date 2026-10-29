@@ -121,7 +121,14 @@ async function call(method, endpoint, body) {
     // sentence worth repeating. Never the raw body — it echoes the request,
     // and the request carried the key.
     const detail = parsed?.errors?.[0]?.detail || `HTTP ${response.status}`;
-    throw new Error(detail);
+    const error = new Error(detail);
+    // Carried so the caller can tell a REFUSAL from an OUTAGE. PayMongo
+    // saying "this method is not enabled" is not a bad gateway, and dressing
+    // it as a 502 is what hid it: Cloudflare replaces a 5xx body with its
+    // own "error code: 502" page, so the gateway's sentence never reached
+    // the phone and every refusal read as "Could not reach VeteRide".
+    error.status = response.status;
+    throw error;
   }
   return parsed;
 }
@@ -272,15 +279,48 @@ function verifyWebhook({ header, rawBody, toleranceSeconds = 300 }) {
  * one, every build already out in the world follows without being rebuilt.
  * The app renders this list; it does not keep its own.
  */
-const METHODS = [
+const ALL_METHODS = [
   { key: "gcash", label: "GCash", flow: "redirect" },
   { key: "paymaya", label: "Maya", flow: "redirect" },
   { key: "qrph", label: "QR Ph", flow: "qr" },
 ];
 
+/**
+ * The ones this ACCOUNT can actually take, which is not the same list.
+ *
+ * A PayMongo account is approved per payment method. On the live key as of
+ * 29 Oct 2026 only QR Ph is enabled: gcash, grab_pay and paymaya are all
+ * refused by PayMongo itself, in about 200ms, while qrph goes through. The
+ * server was still advertising all three, so a driver choosing GCash got a
+ * failure every time - the same shape of bug as offering Maya before Payment
+ * Intents existed, and the reason that list moved out of the app in the
+ * first place. Offering it from the server instead is only an improvement if
+ * the server tells the truth.
+ *
+ * TOPUP_METHODS is a comma-separated allow-list, e.g.
+ *
+ *     TOPUP_METHODS=qrph
+ *     TOPUP_METHODS=qrph,gcash
+ *
+ * Unset means all of them, which is right once the account is fully
+ * approved. An unknown name is ignored rather than invented.
+ */
+function enabledMethods() {
+  const raw = (process.env.TOPUP_METHODS || "").trim();
+  if (!raw) return ALL_METHODS;
+  const wanted = new Set(
+    raw.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean),
+  );
+  const picked = ALL_METHODS.filter((m) => wanted.has(m.key));
+  // An allow-list that matches nothing is far more likely to be a typo than
+  // an instruction to switch top-up off entirely.
+  return picked.length ? picked : ALL_METHODS;
+}
+
 module.exports = {
   WALLETS,
-  METHODS,
+  ALL_METHODS,
+  enabledMethods,
   SOURCE_WALLETS,
   INTENT_WALLETS,
   MIN_PESOS,
