@@ -10,16 +10,35 @@
  * Configure with PAYMONGO_SECRET_KEY in the environment. Test keys begin
  * `sk_test_`, live keys `sk_live_`.
  *
- * THE FLOW, for e-wallets (the Sources API, which is what GCash and Maya
- * use — not Payment Intents):
+ * TWO FLOWS, because PayMongo has two and the wallets are split across them.
+ * This file used to claim GCash and Maya both went through Sources. They do
+ * not: `POST /v1/sources` answers Maya with
+ *
+ *     400 parameter_invalid — The source_type passed paymaya is invalid.
+ *
+ * so every Maya top-up failed. Verified against the live API, 29 Oct 2026.
+ *
+ * SOURCES — gcash, grab_pay:
  *
  *   1. createSource()            -> a checkout_url the driver opens
- *   2. driver authorises in GCash / Maya
+ *   2. driver authorises in GCash / GrabPay
  *   3. PayMongo calls our webhook with `source.chargeable`
  *   4. createPaymentFromSource() actually takes the money
  *   5. `payment.paid` confirms it
  *
- * Steps 3-5 are why the webhook exists. A driver who authorises and then
+ * PAYMENT INTENTS — paymaya:
+ *
+ *   1. createPaymentIntent()     -> an intent and its client_key
+ *   2. createPaymentMethod()     -> a paymaya method
+ *   3. attachPaymentIntent()     -> next_action.redirect.url, the checkout
+ *   4. driver authorises in Maya
+ *   5. PayMongo calls our webhook with `payment.paid`
+ *
+ * Note what step 4-5 does NOT include: there is no createPaymentFrom… call.
+ * An attached intent takes the money itself, so Maya credits on `payment.paid`
+ * alone, and calling anything else would be a second charge.
+ *
+ * The webhook is why either flow is safe. A driver who authorises and then
  * closes the browser must still end up charged and credited, and the phone
  * must still find out — so the webhook, not the handset, is the source of
  * truth about whether money moved.
@@ -29,8 +48,15 @@ const crypto = require("crypto");
 
 const API = "https://api.paymongo.com/v1";
 
-/** The wallets this server will start a source for. */
-const WALLETS = new Set(["gcash", "paymaya", "grab_pay"]);
+/**
+ * Which flow each wallet goes through. Kept as two sets rather than one list
+ * and an if: the split is PayMongo's and it is the thing that was got wrong.
+ */
+const SOURCE_WALLETS = new Set(["gcash", "grab_pay"]);
+const INTENT_WALLETS = new Set(["paymaya"]);
+
+/** Every wallet this server will take, whichever flow it needs. */
+const WALLETS = new Set([...SOURCE_WALLETS, ...INTENT_WALLETS]);
 
 /** PayMongo's own floor for an e-wallet source: PHP 100.00. */
 const MIN_PESOS = 100;
@@ -90,7 +116,11 @@ async function call(method, endpoint, body) {
  * at this edge so no caller has to hold the unit in their head.
  */
 async function createSource({ amount, type, successUrl, failedUrl }) {
-  if (!WALLETS.has(type)) throw new Error(`Unsupported wallet: ${type}`);
+  // SOURCE_WALLETS, not WALLETS: handing Sources a `paymaya` is the bug
+  // this set exists to make impossible.
+  if (!SOURCE_WALLETS.has(type)) {
+    throw new Error(`${type} does not use the Sources API`);
+  }
   const centavos = Math.round(Number(amount) * 100);
   if (!Number.isFinite(centavos) || centavos < MIN_PESOS * 100) {
     throw new Error(`The smallest top-up this wallet accepts is PHP ${MIN_PESOS}.00`);
@@ -111,6 +141,55 @@ async function createPaymentFromSource({ sourceId, amount, description }) {
     description: description || "VeteRide wallet top-up",
     source: { id: sourceId, type: "source" },
   });
+}
+
+/**
+ * Maya, in the three calls PayMongo requires.
+ *
+ * Returns `{ intentId, checkoutUrl }`. The intent id is what the webhook
+ * will name later, so it is what gets stored against the top-up; the
+ * checkout URL is where the driver goes.
+ *
+ * `returnUrl` is handed to PayMongo rather than kept here because PayMongo
+ * appends its own query to it, and the page that catches it has to cope with
+ * whatever arrives.
+ */
+async function startIntentCheckout({ amount, type, returnUrl }) {
+  if (!INTENT_WALLETS.has(type)) {
+    throw new Error(`${type} does not use Payment Intents`);
+  }
+  const centavos = Math.round(Number(amount) * 100);
+  if (!Number.isFinite(centavos) || centavos < MIN_PESOS * 100) {
+    throw new Error(`The smallest top-up this wallet accepts is PHP ${MIN_PESOS}.00`);
+  }
+
+  const intent = await call("POST", "/payment_intents", {
+    amount: centavos,
+    currency: "PHP",
+    payment_method_allowed: [type],
+    description: "VeteRide driver wallet top-up",
+  });
+  const intentId = intent?.data?.id;
+  const clientKey = intent?.data?.attributes?.client_key;
+  if (!intentId || !clientKey) throw new Error("PayMongo did not return a payment intent");
+
+  const method = await call("POST", "/payment_methods", { type });
+  const methodId = method?.data?.id;
+  if (!methodId) throw new Error("PayMongo did not return a payment method");
+
+  const attached = await call("POST", `/payment_intents/${intentId}/attach`, {
+    payment_method: methodId,
+    client_key: clientKey,
+    return_url: returnUrl,
+  });
+  const checkoutUrl = attached?.data?.attributes?.next_action?.redirect?.url || null;
+  if (!checkoutUrl) {
+    // An intent that attached without a redirect is one the driver has no
+    // way to pay: better a refusal now than a top-up row nobody can finish.
+    const status = attached?.data?.attributes?.status || "unknown";
+    throw new Error(`Maya did not return a checkout (status ${status})`);
+  }
+  return { intentId, checkoutUrl };
 }
 
 /**
@@ -160,9 +239,12 @@ function verifyWebhook({ header, rawBody, toleranceSeconds = 300 }) {
 
 module.exports = {
   WALLETS,
+  SOURCE_WALLETS,
+  INTENT_WALLETS,
   MIN_PESOS,
   enabled,
   createSource,
   createPaymentFromSource,
+  startIntentCheckout,
   verifyWebhook,
 };
