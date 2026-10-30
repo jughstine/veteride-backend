@@ -11,6 +11,7 @@ const availabilityRepo = require("../drivers/repositories/availability.repositor
 const vehicleRepo = require("../drivers/repositories/vehicle.repository");
 const vehicleClass = require("../drivers/vehicle-class");
 const walletService = require("../wallet/wallet.service");
+const farePayments = require("./fare-payment.service");
 const logger = require("../../utils/logger");
 const paymentMethods = require("./payment-methods");
 const fares = require("./fares");
@@ -715,6 +716,19 @@ async function recordFare(trip) {
   // that would not take the debit must not undo a completion the passenger
   // and driver have both already seen. One debit per trip is guaranteed by
   // the ledger's unique key, so a retry cannot charge twice.
+  // THE COMMISSION IS OWED ON EVERY COMPLETED RIDE, however the passenger
+  // pays. It used to be skipped for a gateway ride, on the reasoning that
+  // the 12% is withheld at source there - but a gateway ride the passenger
+  // never pays for then owed nothing at all, which is a bypass anyone could
+  // use on purpose: book QR Ph, walk away, ride for free. A ride that
+  // happened is a ride the platform earned on.
+  //
+  // So the debit always happens, and a gateway payment credits the FULL
+  // fare back rather than 88% of it. The driver nets the same either way -
+  // on a PHP 123 fare, -14.76 then +123.00 - and the ledger shows them both
+  // halves instead of one netted number they cannot check.
+  const byGateway = farePayments.isGatewayMethod(trip.payment_method);
+
   if (trip.driver_id) {
     walletService
       .chargeRideCommission({
@@ -723,6 +737,24 @@ async function recordFare(trip) {
         commissionPesos: commission,
       })
       .catch((error) => logger.error?.(`commission debit failed: ${error.message}`));
+  }
+
+  if (byGateway) {
+    // Nothing has been paid yet - the passenger is about to be shown a QR
+    // code. The row says so: pending, settled_with 'gateway', and no
+    // reference until there is one to show. The CHECK in 005_fares.sql
+    // would refuse a 'completed' gateway row without one anyway.
+    return paymentRepo.recordForTrip({
+      tripId: trip.trip_id,
+      riderId: trip.user_id,
+      amount: fare,
+      method: trip.payment_method,
+      status: "pending",
+      settledWith: "gateway",
+      platformFee: commission,
+      driverEarnings: fares.toCentavo(fare - commission),
+      paidAt: null,
+    });
   }
 
   return paymentRepo.recordForTrip({

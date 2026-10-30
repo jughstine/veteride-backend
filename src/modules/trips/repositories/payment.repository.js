@@ -94,6 +94,95 @@ async function addTip(tripId, tip) {
 }
 
 /** The receipt for one ride, or null if it never reached a drop-off. */
+/**
+ * Puts a gateway's reference on a ride's receipt and leaves it pending.
+ *
+ * Written BEFORE the money arrives, so the webhook has a row to find. The
+ * row therefore says `pending` and claims nothing: the CHECK in
+ * 005_fares.sql forbids a 'completed' gateway row without a reference, and
+ * a reference without a confirmed payment would be a receipt for a payment
+ * nobody took.
+ *
+ * Upserts, because a passenger whose first attempt expired must be able to
+ * try again: the second intent replaces the first on the same ride, and
+ * trip_id stays UNIQUE so one ride still has one receipt.
+ */
+async function openGatewayPayment({
+  tripId,
+  riderId,
+  amount,
+  method,
+  platformFee,
+  driverEarnings,
+  gatewayRef,
+}) {
+  await pool.query(
+    `INSERT INTO payments (
+       payment_id, trip_id, rider_id,
+       amount, payment_method, status, settled_with,
+       platform_fee, driver_earnings, payment_gateway_ref
+     ) VALUES (
+       :paymentId, :tripId, :riderId,
+       :amount, :method, 'pending', 'gateway',
+       :platformFee, :driverEarnings, :gatewayRef
+     )
+     ON DUPLICATE KEY UPDATE
+       -- Never touches a row the gateway has already settled. A late
+       -- "pay again" tap must not reopen a ride that is paid for.
+       amount              = IF(status = 'completed', amount, VALUES(amount)),
+       payment_method      = IF(status = 'completed', payment_method, VALUES(payment_method)),
+       settled_with        = IF(status = 'completed', settled_with, VALUES(settled_with)),
+       platform_fee        = IF(status = 'completed', platform_fee, VALUES(platform_fee)),
+       driver_earnings     = IF(status = 'completed', driver_earnings, VALUES(driver_earnings)),
+       payment_gateway_ref = IF(status = 'completed', payment_gateway_ref, VALUES(payment_gateway_ref))`,
+    {
+      paymentId: crypto.randomUUID(),
+      tripId,
+      riderId,
+      amount,
+      method,
+      platformFee,
+      driverEarnings,
+      gatewayRef,
+    },
+  );
+  return findForTrip(tripId);
+}
+
+/** The ride's receipt that carries this gateway reference, if any. */
+async function findByGatewayRef(gatewayRef) {
+  const [rows] = await pool.query(
+    `SELECT ${PAYMENT_COLUMNS}, t.driver_id
+       FROM payments p
+       JOIN trips t ON t.trip_id = p.trip_id
+      WHERE p.payment_gateway_ref = :gatewayRef
+      ORDER BY p.created_at DESC
+      LIMIT 1`,
+    { gatewayRef },
+  );
+  return rows[0] || null;
+}
+
+/**
+ * Marks a gateway payment paid, once.
+ *
+ * The `status <> 'completed'` guard is what makes a retried webhook a
+ * no-op: affectedRows tells the caller whether THIS delivery was the one
+ * that settled it, so the wallet credit happens exactly once.
+ */
+async function completeGatewayPayment({ tripId, gatewayRef }) {
+  const [result] = await pool.query(
+    `UPDATE payments
+        SET status = 'completed',
+            payment_gateway_ref = :gatewayRef,
+            paid_at = COALESCE(paid_at, NOW())
+      WHERE trip_id = :tripId
+        AND status <> 'completed'`,
+    { tripId, gatewayRef },
+  );
+  return result.affectedRows > 0;
+}
+
 async function findForTrip(tripId) {
   const [rows] = await pool.query(
     `SELECT ${PAYMENT_COLUMNS} FROM payments p WHERE p.trip_id = :tripId LIMIT 1`,
@@ -102,4 +191,12 @@ async function findForTrip(tripId) {
   return rows[0] || null;
 }
 
-module.exports = { PAYMENT_COLUMNS, recordForTrip, addTip, findForTrip };
+module.exports = {
+  PAYMENT_COLUMNS,
+  recordForTrip,
+  openGatewayPayment,
+  findByGatewayRef,
+  completeGatewayPayment,
+  addTip,
+  findForTrip,
+};

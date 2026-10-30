@@ -1,4 +1,7 @@
 const tripService = require("./trips.service");
+const farePayments = require("./fare-payment.service");
+const tripRepo = require("./repositories/trip.repository");
+const AppError = require("../../utils/AppError");
 const asyncHandler = require("../../utils/asyncHandler");
 
 const book = asyncHandler(async (req, res) => {
@@ -119,7 +122,29 @@ const availability = asyncHandler(async (req, res) => {
   res.status(200).json(result);
 });
 
+/**
+ * The passenger pays this ride's fare through the gateway.
+ *
+ * The trip is read FOR THIS PARTY, never by id alone: a trip id a caller
+ * could guess is a fare a caller could pay for somebody else - or, worse,
+ * raise a charge against. findByIdForParty is what ties the ride to the
+ * token holding it.
+ */
+const payFare = asyncHandler(async (req, res) => {
+  const trip = await tripRepo.findByIdForParty(req.params.tripId, req.user.id, req.user.role);
+  if (!trip) throw new AppError(404, "TRIP_NOT_FOUND", "No such trip");
+  const proto = req.headers["x-forwarded-proto"] || req.protocol;
+  res.status(201).json(
+    await farePayments.startFarePayment({
+      trip,
+      role: req.user.role,
+      origin: `${proto}://${req.get("host")}`,
+    }),
+  );
+});
+
 module.exports = {
+  payFare,
   history,
   availability,
   book,
