@@ -153,6 +153,26 @@ async function settleTopup({ topupId, paymentRef }) {
  * A 'fare' row and a 'commission' row for the same trip do not collide,
  * because the unique key is on the pair.
  */
+/**
+ * Has this trip's commission actually been taken?
+ *
+ * Asked before a gateway fare is credited, because the two are a pair: the
+ * full fare may only be credited where the 12% has already been debited.
+ * The debit at completion is fire-and-forget by design - a ride must not
+ * fail to finish because the wallet would not take a row - so "it was
+ * called" and "it happened" are not the same statement, and only the ledger
+ * knows which.
+ */
+async function hasCommissionForTrip(tripId) {
+  if (!tripId) return false;
+  const [rows] = await pool.query(
+    `SELECT 1 FROM wallet_ledger
+      WHERE trip_id = :tripId AND kind = 'commission' LIMIT 1`,
+    { tripId },
+  );
+  return rows.length > 0;
+}
+
 async function creditFare({ driverId, tripId, amount, note }) {
   const earned = Math.round(Number(amount) * 100) / 100;
   if (!(earned > 0)) return null;
@@ -284,5 +304,6 @@ module.exports = {
   settleTopup,
   chargeCommission,
   creditFare,
+  hasCommissionForTrip,
   ledgerFor,
 };

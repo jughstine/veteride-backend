@@ -270,6 +270,11 @@ async function failFromIntent({ intentId, reason }) {
  * when the charge was opened, and a number recomputed later can disagree
  * with the one the passenger was shown.
  */
+/** Whether this trip's 12% has actually been taken out of the float. */
+async function commissionTaken(tripId) {
+  return walletRepo.hasCommissionForTrip(tripId);
+}
+
 async function creditDriverFare({ driverId, tripId, pesos }) {
   return walletRepo.creditFare({
     driverId,
@@ -307,4 +312,5 @@ module.exports = {
   failFromIntent,
   chargeRideCommission,
   creditDriverFare,
+  commissionTaken,
 };

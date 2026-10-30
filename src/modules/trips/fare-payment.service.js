@@ -161,15 +161,32 @@ async function creditFareFromIntent({ intentId }) {
     return { handled: true, credited: false, reason: "no driver on the trip" };
   }
 
-  // THE FULL FARE, not driver_earnings. The 12% was already taken out of
-  // the float at completion - on every ride, paid or not, so that booking a
-  // gateway ride and never paying is not a way to ride commission-free. The
-  // driver nets fare-minus-12% across the two ledger rows, which is the
-  // same number and a more honest statement than one netted line.
+  // HOW MUCH TO CREDIT DEPENDS ON WHETHER THE 12% WAS ACTUALLY TAKEN.
+  //
+  // The full fare is only right where the commission has already been
+  // debited - the two are a pair, and the driver nets fare-minus-12% across
+  // them. But the debit at completion is fire-and-forget by design: a ride
+  // must not fail to finish because the wallet would not take a row. So it
+  // can be missing, and crediting the full fare against a commission nobody
+  // took hands the driver VeteRide's cut.
+  //
+  // Asked of the LEDGER, not assumed from the code path. Where the debit is
+  // missing the driver is credited their share instead, which lands them on
+  // the same net figure and keeps the platform's 12% either way. Both
+  // branches are idempotent: (trip_id, kind) refuses a second 'fare' row.
+  const charged = await walletService.commissionTaken(payment.trip_id);
+  const credit = charged ? Number(payment.amount) : Number(payment.driver_earnings);
+  if (!charged) {
+    logger.warn?.(
+      `trip ${payment.trip_id} paid by gateway with no commission row; ` +
+        `crediting the driver's share (${credit}) rather than the full fare`,
+    );
+  }
+
   const balance = await walletService.creditDriverFare({
     driverId: payment.driver_id,
     tripId: payment.trip_id,
-    pesos: Number(payment.amount),
+    pesos: credit,
   });
 
   return {
