@@ -44,15 +44,41 @@ function isGatewayMethod(method) {
  * at booking would need a refund every time the ride was shorter than the
  * estimate.
  */
-async function startFarePayment({ trip, origin }) {
+async function startFarePayment({ trip, origin, role }) {
   if (!trip) throw new AppError(404, "NOT_FOUND", "No such trip");
   if (!paymongo.enabled()) {
     throw new AppError(503, "NO_GATEWAY", "Paying in the app is not available right now.");
   }
 
-  const fare = fares.toCentavo(trip.final_fare ?? trip.estimated_fare ?? 0);
+  // THE PASSENGER PAYS. findByIdForParty lets a driver read their own ride
+  // too, so without this a driver could raise the charge on a ride they
+  // drove - and the credit for it lands in their own float.
+  if (role !== "rider") {
+    throw new AppError(403, "RIDER_ONLY", "Only the passenger can pay for a ride.");
+  }
+
+  // Booked to be settled this way, or not at all. Without this a CASH ride
+  // could be paid through the gateway - and a cash ride has ALREADY had the
+  // commission taken out of the float, so the driver would be credited the
+  // fare on top of keeping the cash. One ride, paid for twice.
+  if (!isGatewayMethod(trip.payment_method)) {
+    throw new AppError(
+      409,
+      "NOT_A_GATEWAY_RIDE",
+      "This ride was booked to be paid in cash.",
+    );
+  }
+
+  // Only once the ride is over. The fare is the FINAL one and never the
+  // estimate: this server re-prices from its own tariff at the drop-off, so
+  // a charge raised against the estimate would be the wrong amount on every
+  // ride that ran short - and a refund VeteRide cannot make.
+  if (trip.status !== "completed") {
+    throw new AppError(409, "NOT_COMPLETED", "This ride is not finished yet.");
+  }
+  const fare = fares.toCentavo(trip.final_fare ?? 0);
   if (!(fare > 0)) {
-    throw new AppError(409, "NO_FARE", "This ride has no fare to pay yet.");
+    throw new AppError(409, "NO_FARE", "This ride has no final fare yet.");
   }
 
   const existing = await paymentRepo.findForTrip(trip.trip_id);
@@ -135,10 +161,15 @@ async function creditFareFromIntent({ intentId }) {
     return { handled: true, credited: false, reason: "no driver on the trip" };
   }
 
+  // THE FULL FARE, not driver_earnings. The 12% was already taken out of
+  // the float at completion - on every ride, paid or not, so that booking a
+  // gateway ride and never paying is not a way to ride commission-free. The
+  // driver nets fare-minus-12% across the two ledger rows, which is the
+  // same number and a more honest statement than one netted line.
   const balance = await walletService.creditDriverFare({
     driverId: payment.driver_id,
     tripId: payment.trip_id,
-    pesos: Number(payment.driver_earnings),
+    pesos: Number(payment.amount),
   });
 
   return {

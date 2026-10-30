@@ -716,14 +716,20 @@ async function recordFare(trip) {
   // that would not take the debit must not undo a completion the passenger
   // and driver have both already seen. One debit per trip is guaranteed by
   // the ledger's unique key, so a retry cannot charge twice.
-  // THE FORK. A ride the passenger will settle through the gateway must not
-  // have the commission taken from the float as well: the 12% is withheld
-  // at source there, and taking it twice charges the driver for one ride
-  // twice over. The gateway half is fare-payment.service.js, which credits
-  // the driver their 88% when PayMongo confirms the money.
+  // THE COMMISSION IS OWED ON EVERY COMPLETED RIDE, however the passenger
+  // pays. It used to be skipped for a gateway ride, on the reasoning that
+  // the 12% is withheld at source there - but a gateway ride the passenger
+  // never pays for then owed nothing at all, which is a bypass anyone could
+  // use on purpose: book QR Ph, walk away, ride for free. A ride that
+  // happened is a ride the platform earned on.
+  //
+  // So the debit always happens, and a gateway payment credits the FULL
+  // fare back rather than 88% of it. The driver nets the same either way -
+  // on a PHP 123 fare, -14.76 then +123.00 - and the ledger shows them both
+  // halves instead of one netted number they cannot check.
   const byGateway = farePayments.isGatewayMethod(trip.payment_method);
 
-  if (trip.driver_id && !byGateway) {
+  if (trip.driver_id) {
     walletService
       .chargeRideCommission({
         driverId: trip.driver_id,

@@ -137,6 +137,7 @@ const payFare = asyncHandler(async (req, res) => {
   res.status(201).json(
     await farePayments.startFarePayment({
       trip,
+      role: req.user.role,
       origin: `${proto}://${req.get("host")}`,
     }),
   );
