@@ -109,4 +109,12 @@ router.post(
   controller.postMessage,
 );
 
+// The passenger settles this ride through the gateway, and gets back a QR
+// Ph code to scan. Nothing is credited here - the webhook does that.
+router.post(
+  "/:tripId/pay",
+  validateParams(schemas.tripIdParams),
+  controller.payFare,
+);
+
 module.exports = router;

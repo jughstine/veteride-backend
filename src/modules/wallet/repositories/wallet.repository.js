@@ -137,6 +137,77 @@ async function settleTopup({ topupId, paymentRef }) {
  * ride that happened was never charged for, which is worse than a balance
  * the driver has to clear before they can go online again.
  */
+/**
+ * Credits a driver for a fare the GATEWAY collected, exactly once.
+ *
+ * The mirror image of [chargeCommission], and deliberately built the same
+ * way: INSERT IGNORE against wallet_ledger_trip_commission_uk (trip_id,
+ * kind) is what makes a retried webhook a no-op. PayMongo retries, and a
+ * credit invented by a network retry is indistinguishable afterwards from
+ * one a passenger paid for.
+ *
+ * The amount here is what the DRIVER gets - the fare already less the
+ * platform's cut. The cut is kept at source and is not taken from the float
+ * as well; see 013_fare_credit.sql.
+ *
+ * A 'fare' row and a 'commission' row for the same trip do not collide,
+ * because the unique key is on the pair.
+ */
+async function creditFare({ driverId, tripId, amount, note }) {
+  const earned = Math.round(Number(amount) * 100) / 100;
+  if (!(earned > 0)) return null;
+
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+
+    const [result] = await connection.query(
+      `INSERT IGNORE INTO wallet_ledger
+         (entry_id, driver_id, kind, amount, balance_after, trip_id, note)
+       VALUES (:entryId, :driverId, 'fare', :amount, 0, :tripId, :note)`,
+      {
+        entryId: randomUUID(),
+        driverId,
+        amount: earned,
+        tripId,
+        note: note || null,
+      },
+    );
+    if (!result.affectedRows) {
+      // Already credited for this trip.
+      await connection.rollback();
+      return null;
+    }
+
+    await connection.query(
+      `UPDATE drivers SET wallet_balance = wallet_balance + :earned WHERE driver_id = :driverId`,
+      { earned, driverId },
+    );
+    const [after] = await connection.query(
+      `SELECT wallet_balance FROM drivers WHERE driver_id = :driverId`,
+      { driverId },
+    );
+    const balance = Number(after[0].wallet_balance);
+
+    // Same reason as the commission path: balance_after cannot be known
+    // until the UPDATE above has run, so it is corrected inside the one
+    // transaction and nothing outside it observes the zero.
+    await connection.query(
+      `UPDATE wallet_ledger SET balance_after = :balance
+        WHERE trip_id = :tripId AND kind = 'fare'`,
+      { balance, tripId },
+    );
+
+    await connection.commit();
+    return balance;
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+}
+
 async function chargeCommission({ driverId, tripId, amount, note }) {
   const cut = Math.round(Number(amount) * 100) / 100;
   if (!(cut > 0)) return null;
@@ -212,5 +283,6 @@ module.exports = {
   markTopupFailed,
   settleTopup,
   chargeCommission,
+  creditFare,
   ledgerFor,
 };

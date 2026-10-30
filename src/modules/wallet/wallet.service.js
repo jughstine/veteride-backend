@@ -258,6 +258,28 @@ async function failFromIntent({ intentId, reason }) {
 }
 
 /**
+ * A fare the gateway collected, credited to the driver who earned it.
+ *
+ * The opposite direction from [chargeRideCommission], and the two are
+ * mutually exclusive per ride: a cash fare takes 12% OUT of the float, a
+ * gateway fare puts the other 88% IN. Taking both for one ride would charge
+ * the driver twice, which is why trips.service.js forks before either.
+ *
+ * [pesos] is the driver's share, already less the platform's cut. This does
+ * not recompute it: the split was worked out and written onto the receipt
+ * when the charge was opened, and a number recomputed later can disagree
+ * with the one the passenger was shown.
+ */
+async function creditDriverFare({ driverId, tripId, pesos }) {
+  return walletRepo.creditFare({
+    driverId,
+    tripId,
+    amount: pesos,
+    note: "Fare paid in the app",
+  });
+}
+
+/**
  * The platform's cut, taken when a ride completes.
  *
  * Off the FINAL fare, not the estimate at booking (owner, 26 Oct 2026):
@@ -284,4 +306,5 @@ module.exports = {
   creditFromIntent,
   failFromIntent,
   chargeRideCommission,
+  creditDriverFare,
 };

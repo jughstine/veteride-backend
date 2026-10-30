@@ -2,6 +2,9 @@ const { Router } = require("express");
 const express = require("express");
 const paymongo = require("./paymongo");
 const walletService = require("./wallet.service");
+// Required here rather than inside wallet.service: trips already depends
+// on wallet, so the dependency only runs one way from this file.
+const farePayments = require("../trips/fare-payment.service");
 const logger = require("../../utils/logger");
 
 /**
@@ -64,10 +67,17 @@ router.post(
           resource?.attributes?.data?.payment_intent_id ||
           null;
         if (intentId) {
-          const outcome = await walletService.creditFromIntent({
+          // An intent is either a driver topping up or a passenger paying a
+          // fare. The top-up is tried first and reports handled:false when
+          // the reference is not one of its own, so an unknown id falls
+          // through to the fare rather than being treated as an error.
+          let outcome = await walletService.creditFromIntent({
             intentId,
             paymentId: resource.id || null,
           });
+          if (!outcome.handled) {
+            outcome = await farePayments.creditFareFromIntent({ intentId });
+          }
           logger.info?.(`paymongo payment.paid ${intentId}: ${JSON.stringify(outcome)}`);
         } else {
           // A GCash payment.paid also lands here: it is the confirmation of

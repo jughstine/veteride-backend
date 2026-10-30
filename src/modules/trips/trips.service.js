@@ -11,6 +11,7 @@ const availabilityRepo = require("../drivers/repositories/availability.repositor
 const vehicleRepo = require("../drivers/repositories/vehicle.repository");
 const vehicleClass = require("../drivers/vehicle-class");
 const walletService = require("../wallet/wallet.service");
+const farePayments = require("./fare-payment.service");
 const logger = require("../../utils/logger");
 const paymentMethods = require("./payment-methods");
 const fares = require("./fares");
@@ -715,7 +716,14 @@ async function recordFare(trip) {
   // that would not take the debit must not undo a completion the passenger
   // and driver have both already seen. One debit per trip is guaranteed by
   // the ledger's unique key, so a retry cannot charge twice.
-  if (trip.driver_id) {
+  // THE FORK. A ride the passenger will settle through the gateway must not
+  // have the commission taken from the float as well: the 12% is withheld
+  // at source there, and taking it twice charges the driver for one ride
+  // twice over. The gateway half is fare-payment.service.js, which credits
+  // the driver their 88% when PayMongo confirms the money.
+  const byGateway = farePayments.isGatewayMethod(trip.payment_method);
+
+  if (trip.driver_id && !byGateway) {
     walletService
       .chargeRideCommission({
         driverId: trip.driver_id,
@@ -723,6 +731,24 @@ async function recordFare(trip) {
         commissionPesos: commission,
       })
       .catch((error) => logger.error?.(`commission debit failed: ${error.message}`));
+  }
+
+  if (byGateway) {
+    // Nothing has been paid yet - the passenger is about to be shown a QR
+    // code. The row says so: pending, settled_with 'gateway', and no
+    // reference until there is one to show. The CHECK in 005_fares.sql
+    // would refuse a 'completed' gateway row without one anyway.
+    return paymentRepo.recordForTrip({
+      tripId: trip.trip_id,
+      riderId: trip.user_id,
+      amount: fare,
+      method: trip.payment_method,
+      status: "pending",
+      settledWith: "gateway",
+      platformFee: commission,
+      driverEarnings: fares.toCentavo(fare - commission),
+      paidAt: null,
+    });
   }
 
   return paymentRepo.recordForTrip({
