@@ -42,8 +42,25 @@ const walletLedgerQuerySchema = z.object({
   cursor: z.coerce.number().int().positive().optional(),
 });
 
+/**
+ * A handset registering itself for push.
+ *
+ * `token` is the Firebase Installation ID in firebase_messaging 17, not the
+ * old registration token. 255 because Google has never committed to a length
+ * and has changed it before.
+ *
+ * THE ACCOUNT IS NOT IN HERE and must never be: it comes from the access
+ * token. A token addressed to an account the caller names is a way to
+ * receive somebody else's rides.
+ */
+const pushTokenSchema = z.object({
+  token: z.string().trim().min(1).max(255),
+  platform: z.enum(["android", "ios"]).default("android"),
+});
+
 module.exports = {
   idParamSchema,
+  pushTokenSchema,
   updateProfileSchema,
   updatePreferencesSchema,
   deleteAccountSchema,
