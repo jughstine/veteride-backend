@@ -12,6 +12,8 @@ const uploadsRoutes = require("./modules/uploads/uploads.routes");
 const adminRoutes = require("./modules/admin/admin.routes");
 const streamRoutes = require("./realtime/stream.routes");
 
+const healthController = require("./modules/health/health.controller");
+
 const errorHandler = require("./middleware/errorHandler");
 
 const app = express();
@@ -27,7 +29,10 @@ app.use("/webhooks", paymongoWebhookRoutes);
 
 app.use(express.json({ limit: "1mb" }));
 
-app.get("/health", (req, res) => res.status(200).json({ status: "ok" }));
+// Liveness, AND what this process is running. The commit is the only
+// answer to "is X deployed?" that does not need a token, a handset or
+// somebody on the box - see the note in health.controller.js.
+app.get("/health", healthController.health);
 
 // PayMongo sends the driver's browser here after they pay. Serving a
 // page rather than the API 404 they used to land on.
