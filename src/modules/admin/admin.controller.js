@@ -1,4 +1,5 @@
 const adminService = require("./admin.service");
+const walletService = require("../wallet/wallet.service");
 const asyncHandler = require("../../utils/asyncHandler");
 
 // --- Reads ---
@@ -75,6 +76,30 @@ const cancelTrip = asyncHandler(async (req, res) => {
   res.status(200).json(result);
 });
 
+// --- Cash-out queue ---
+//
+// Phase 1 is settled by hand: the driver asks, the wallet is debited there
+// and then, the request appears here, somebody sends the money and marks it
+// sent. Phase 2 replaces that middle step with PayMongo and changes neither
+// these routes nor the app.
+
+const listPayouts = asyncHandler(async (req, res) => {
+  res.status(200).json(await walletService.adminListPayouts(req.query));
+});
+
+const settlePayout = asyncHandler(async (req, res) => {
+  res.status(200).json(
+    await walletService.settlePayout(req.params.payoutId, req.body.provider_ref),
+  );
+});
+
+// Credits the wallet back, in the same transaction as the status change.
+const failPayout = asyncHandler(async (req, res) => {
+  res.status(200).json(
+    await walletService.failPayout(req.params.payoutId, req.body.reason),
+  );
+});
+
 module.exports = {
   overview,
   listRiders,
@@ -89,4 +114,7 @@ module.exports = {
   createVehicle,
   updateVehicle,
   cancelTrip,
+  listPayouts,
+  settlePayout,
+  failPayout,
 };
