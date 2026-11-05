@@ -1,10 +1,5 @@
 const { z } = require("zod");
-const {
-  MIN_TOPUP,
-  MAX_TOPUP,
-  MIN_PAYOUT,
-  MAX_PAYOUT,
-} = require("./wallet.service");
+const { MIN_TOPUP, MAX_TOPUP } = require("./wallet.service");
 
 /**
  * What a driver may ask to put in.
@@ -50,11 +45,22 @@ const startTopupSchema = z.object({
  * amount that would pay the driver nothing.
  */
 const requestPayoutSchema = z.object({
-  amount: z.coerce
-    .number()
-    .finite()
-    .min(MIN_PAYOUT, `The smallest cash-out is PHP ${MIN_PAYOUT.toLocaleString("en-PH")}.`)
-    .max(MAX_PAYOUT, `The largest single cash-out is PHP ${MAX_PAYOUT.toLocaleString("en-PH")}.`),
+  // SHAPE ONLY. THE BOUNDS ARE THE SERVICE'S, deliberately, and this is the
+  // one place the top-up pattern must not be copied.
+  //
+  // validateBody runs before the controller, so a bound here answers first
+  // and answers with VALIDATION_ERROR - and the app's whole refusal design
+  // turns on the code. AMOUNT_BELOW_MIN, INSUFFICIENT_BALANCE and
+  // PAYOUT_PENDING all read as "it did not work" to a driver, and only one
+  // of them is anybody's fault.
+  //
+  // It also prefixes the field name, so a driver on a handset was shown
+  //
+  //     amount: The smallest cash-out is PHP 500.
+  //
+  // The service throws AMOUNT_BELOW_MIN / AMOUNT_ABOVE_MAX with the same
+  // sentence and no prefix, and it is just as server-side as this is.
+  amount: z.coerce.number().finite().positive(),
 
   destination: z.enum(["gcash", "bank"]),
 
