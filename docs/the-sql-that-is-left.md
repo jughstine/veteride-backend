@@ -79,8 +79,29 @@ module.exports = { saveToken, tokensFor, dropToken };
 `src/modules/profile/profile.routes.js`. This is the one trap: the file
 gates its whole mount with `requireRole("rider")`, so a route appended in
 the usual place **refuses every driver** — and drivers are who this is for.
-The failure is quiet, a 403 the app swallows along with today's 404, so it
-would look like nothing had changed.
+
+#### This is not hypothetical. It is happening right now.
+
+A driver signed in on a handset this evening, 5 Nov, against the live
+server at `88d961d`. One line came back:
+
+```
+11-05 20:36:49.486 I/flutter: VeteRide: push token refused (FORBIDDEN)
+```
+
+**FORBIDDEN, not NOT_FOUND** — and the route does not exist yet. That is
+the whole point. `router.use(authenticate, requireRole("rider"))` runs
+*before* route matching, so a driver hitting any path under `/me` gets 403
+whether the route is there or not.
+
+Which means: **a `POST /me/push-token` added below that line produces
+exactly what you see above.** Same code, same silence, same single log
+line on a handset nobody is watching. It would be shipped, and it would
+still not work, and nothing in the response would say why.
+
+Declared above the gate, the same driver gets a 200 and the row lands in
+`device_tokens`. That one line of placement is the difference between the
+feature working and the feature looking like it works.
 
 ```js
 // BEFORE router.use(authenticate, requireRole("rider"))
