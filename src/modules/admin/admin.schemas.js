@@ -54,6 +54,26 @@ const paymentsQuery = z.object({
   status: z.enum(PAYMENT_STATES).optional(),
 });
 
+const PAYOUT_STATES = ["requested", "sent", "failed", "cancelled"];
+
+const payoutsQuery = z.object({
+  ...pagination,
+  status: z.enum(PAYOUT_STATES).optional(),
+});
+
+const payoutIdParams = z.object({ payoutId: uuid });
+
+// The gateway's or the bank's own reference for the transfer. Kept so a
+// settled payout can be traced back to the money that actually moved — in
+// phase 2 this is PayMongo's transfer id, written by the same route.
+const payoutSettleBody = z.object({
+  provider_ref: z.string().trim().min(1).max(64).optional(),
+});
+
+const payoutFailBody = z.object({
+  reason: z.string().trim().min(1).max(255),
+});
+
 const documentsQuery = z.object({
   ...pagination,
   driverId: accountId.optional(),
@@ -133,4 +153,8 @@ module.exports = {
   vehicleCreateBody,
   vehicleUpdateBody,
   cancelTripBody,
+  payoutsQuery,
+  payoutIdParams,
+  payoutSettleBody,
+  payoutFailBody,
 };

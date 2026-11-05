@@ -1,6 +1,7 @@
 const env = require("../../config/env");
 const paymongo = require("./paymongo");
 const walletRepo = require("./repositories/wallet.repository");
+const payoutRepo = require("./repositories/payout.repository");
 const AppError = require("../../utils/AppError");
 
 /**
@@ -30,6 +31,39 @@ const MIN_TOPUP = Math.max(
 );
 const MAX_TOPUP = Number(process.env.MAX_TOPUP_PESOS || 3000);
 
+// What VeteRide keeps for making the transfer, borne by the driver and
+// taken out of what they receive. Owner's figure, 4 Nov 2026.
+const PAYOUT_FEE = Number(process.env.PAYOUT_FEE_PESOS || 10);
+
+/**
+ * The smallest cash-out, and it is NEVER BELOW THE FEE.
+ *
+ * A payout at or under the fee pays the driver nothing or less. This was
+ * found on a handset with a test build: at a PHP 1 minimum the screen
+ * offered "asking for PHP 1 pays you -PHP 9". The app lifts its own floor
+ * to fee + 1, but an APK is easy to edit and a server is not, so the floor
+ * is applied here as well.
+ *
+ * ONE NUMBER, read by both the schema and the wallet reply. MIN_TOPUP was
+ * once a literal in wallet.schemas.js and a variable here, and the server
+ * spent a while advertising a minimum it then refused. Both ends read this.
+ */
+const MIN_PAYOUT = Math.max(
+  Number(process.env.MIN_PAYOUT_PESOS || 500),
+  PAYOUT_FEE + 1,
+);
+const MAX_PAYOUT = Number(process.env.MAX_PAYOUT_PESOS || 3000);
+
+// An optional ceiling on what one driver may take out in a day. Unset means
+// no limit; the mechanism is here so the figure can be set later without a
+// deploy, the same discipline as TOPUP_METHODS.
+const MAX_PAYOUT_PER_DAY = process.env.MAX_PAYOUT_PER_DAY_PESOS
+  ? Number(process.env.MAX_PAYOUT_PER_DAY_PESOS)
+  : null;
+
+// Where a driver's money may be sent. Theirs, never ours.
+const PAYOUT_DESTINATIONS = new Set(["gcash", "bank"]);
+
 /** Centavos, like every other money figure the app reads off this server. */
 function toMinor(pesos) {
   return Math.round(Number(pesos || 0) * 100);
@@ -43,6 +77,12 @@ async function wallet(driverId) {
     currency: "PHP",
     min_topup: MIN_TOPUP,
     max_topup: MAX_TOPUP,
+    // Read by the cash-out sheet, which falls back to 500/3000/10 only when
+    // these are absent. Changing any of them is a server-side change with no
+    // app release.
+    min_payout: MIN_PAYOUT,
+    max_payout: MAX_PAYOUT,
+    payout_fee: PAYOUT_FEE,
     // What a driver must hold to go online. Named here so the app can warn
     // BEFORE the switch is refused rather than explaining a 403 afterwards.
     min_online: env.rides.minWalletToGoOnline,
@@ -65,6 +105,7 @@ async function ledger(driverId, limit) {
     balance_after_minor: toMinor(row.balance_after),
     trip_id: row.trip_id,
     topup_id: row.topup_id,
+    payout_id: row.payout_id,
     note: row.note,
     created_at: row.created_at,
   }));
@@ -301,9 +342,179 @@ async function chargeRideCommission({ driverId, tripId, commissionPesos }) {
   });
 }
 
+/**
+ * Last four digits only.
+ *
+ * A driver's GCash number is in every payout row, and a payout is read on a
+ * list screen, in a log line and in an error. The console gets the whole
+ * thing because somebody there has to type it into GCash; nothing else does.
+ */
+function maskAccount(ref) {
+  const value = String(ref || "");
+  return value.length <= 4 ? value : `\u2022\u2022\u2022\u2022${value.slice(-4)}`;
+}
+
+/** What the driver's app reads. Centavos, like every other money figure. */
+function toPayoutJson(row) {
+  return {
+    payout_id: row.payout_id,
+    amount_minor: toMinor(row.amount),
+    fee_minor: toMinor(row.fee),
+    net_amount_minor: toMinor(row.net_amount),
+    status: row.status,
+    destination: row.destination,
+    account_ref: maskAccount(row.account_ref),
+    account_name: row.account_name,
+    requested_at: row.requested_at,
+    settled_at: row.settled_at,
+    failure_reason: row.failure_reason,
+  };
+}
+
+/** What the console reads. The account is NOT masked — it has to be paid. */
+function toAdminPayoutJson(row) {
+  return {
+    ...toPayoutJson(row),
+    driver_id: String(row.driver_id),
+    driver_name: row.driver_name,
+    account_ref: row.account_ref,
+    provider_ref: row.provider_ref,
+  };
+}
+
+/**
+ * The driver asks for money out of their wallet.
+ *
+ * The amount is checked here against the live configuration, and the
+ * balance, the one-in-flight rule and the daily ceiling are checked in SQL
+ * inside one transaction — see payout.repository.js for why none of them
+ * can be done in JavaScript.
+ *
+ * EVERY REFUSAL HAS ITS OWN CODE. "It did not work" is the same sentence
+ * for a driver whether they asked for too much, have too little, or already
+ * have one waiting, and only one of those is anybody's fault.
+ */
+async function requestPayout(driverId, body) {
+  const pesos = Number(body.amount);
+  if (!Number.isFinite(pesos) || pesos < MIN_PAYOUT) {
+    throw new AppError(
+      400,
+      "AMOUNT_BELOW_MIN",
+      `The smallest cash-out is PHP ${MIN_PAYOUT.toLocaleString("en-PH")}.`,
+    );
+  }
+  if (pesos > MAX_PAYOUT) {
+    throw new AppError(
+      400,
+      "AMOUNT_ABOVE_MAX",
+      `The largest single cash-out is PHP ${MAX_PAYOUT.toLocaleString("en-PH")}.`,
+    );
+  }
+  if (!PAYOUT_DESTINATIONS.has(body.destination)) {
+    throw new AppError(
+      400,
+      "BAD_DESTINATION",
+      `Cash-out to ${body.destination} is not supported.`,
+    );
+  }
+
+  const result = await payoutRepo.requestPayout({
+    driverId,
+    amount: pesos,
+    fee: PAYOUT_FEE,
+    destination: body.destination,
+    accountRef: body.account_ref,
+    accountName: body.account_name,
+    idempotencyKey: body.idempotency_key,
+    maxPerDay: MAX_PAYOUT_PER_DAY,
+  });
+
+  if (result.reason === "PAYOUT_PENDING") {
+    throw new AppError(
+      409,
+      "PAYOUT_PENDING",
+      "You already have a cash-out waiting. It has to be sent before you can ask for another.",
+    );
+  }
+  if (result.reason === "INSUFFICIENT_BALANCE") {
+    throw new AppError(
+      400,
+      "INSUFFICIENT_BALANCE",
+      "Your balance is lower than that. Nothing has been taken.",
+    );
+  }
+  if (result.reason === "DAILY_LIMIT") {
+    throw new AppError(
+      400,
+      "DAILY_LIMIT",
+      "That is more than can be cashed out in one day. Please try again tomorrow.",
+    );
+  }
+  if (!result.payout) {
+    throw new AppError(500, "PAYOUT_FAILED", "The cash-out could not be opened.");
+  }
+
+  // A replay answers 200 with the payout that already exists, never a 409:
+  // the app reuses one idempotency key for every retry inside a sheet, so
+  // two taps on a slow connection are one payout.
+  return toPayoutJson(result.payout);
+}
+
+async function listPayouts(driverId, limit) {
+  const rows = await payoutRepo.listForDriver(driverId, limit);
+  return { items: rows.map(toPayoutJson) };
+}
+
+// --- The console's half ---
+
+async function adminListPayouts({ status, limit, offset }) {
+  const rows = await payoutRepo.listForAdmin({ status, limit, offset });
+  return { items: rows.map(toAdminPayoutJson) };
+}
+
+/** The money has gone. Records the transfer and closes the row. */
+async function settlePayout(payoutId, providerRef) {
+  const changed = await payoutRepo.settle({ payoutId, providerRef });
+  const row = await payoutRepo.findById(payoutId);
+  if (!row) throw new AppError(404, "NOT_FOUND", "No such cash-out.");
+  if (!changed) {
+    throw new AppError(
+      409,
+      "ALREADY_CLOSED",
+      `This cash-out is already ${row.status}.`,
+      toAdminPayoutJson(row),
+    );
+  }
+  return toAdminPayoutJson(row);
+}
+
+/** It did not go. Credits the wallet back in the same transaction. */
+async function failPayout(payoutId, reason) {
+  const changed = await payoutRepo.fail({ payoutId, reason });
+  const row = await payoutRepo.findById(payoutId);
+  if (!row) throw new AppError(404, "NOT_FOUND", "No such cash-out.");
+  if (!changed) {
+    throw new AppError(
+      409,
+      "ALREADY_CLOSED",
+      `This cash-out is already ${row.status}.`,
+      toAdminPayoutJson(row),
+    );
+  }
+  return toAdminPayoutJson(row);
+}
+
 module.exports = {
   MIN_TOPUP,
   MAX_TOPUP,
+  MIN_PAYOUT,
+  MAX_PAYOUT,
+  PAYOUT_FEE,
+  requestPayout,
+  listPayouts,
+  adminListPayouts,
+  settlePayout,
+  failPayout,
   wallet,
   ledger,
   startTopup,

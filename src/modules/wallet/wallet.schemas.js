@@ -1,5 +1,10 @@
 const { z } = require("zod");
-const { MIN_TOPUP, MAX_TOPUP } = require("./wallet.service");
+const {
+  MIN_TOPUP,
+  MAX_TOPUP,
+  MIN_PAYOUT,
+  MAX_PAYOUT,
+} = require("./wallet.service");
 
 /**
  * What a driver may ask to put in.
@@ -33,4 +38,40 @@ const startTopupSchema = z.object({
   method: z.enum(["gcash", "paymaya", "grab_pay", "qrph"]),
 });
 
-module.exports = { startTopupSchema };
+/**
+ * What a driver may ask to take out.
+ *
+ * The bounds read MIN_PAYOUT and MAX_PAYOUT from the service for the same
+ * reason the top-up schema does: a minimum advertised in the wallet reply
+ * and a different one enforced here is a figure the app offers and the
+ * server refuses.
+ *
+ * MIN_PAYOUT already has the fee floor applied, so this cannot accept an
+ * amount that would pay the driver nothing.
+ */
+const requestPayoutSchema = z.object({
+  amount: z.coerce
+    .number()
+    .finite()
+    .min(MIN_PAYOUT, `The smallest cash-out is PHP ${MIN_PAYOUT.toLocaleString("en-PH")}.`)
+    .max(MAX_PAYOUT, `The largest single cash-out is PHP ${MAX_PAYOUT.toLocaleString("en-PH")}.`),
+
+  destination: z.enum(["gcash", "bank"]),
+
+  // The DRIVER'S account, never ours. Loose on shape by design: a GCash
+  // number and a bank account number look nothing alike, and a driver
+  // refused for the formatting is a driver who cannot be paid.
+  account_ref: z.string().trim().min(4).max(64),
+  account_name: z.string().trim().min(1).max(120),
+
+  // Generated once by the app when the cash-out sheet opens and reused by
+  // every retry inside it. driver_payouts_idem_uk is what makes it mean
+  // something; without it, two taps on a slow connection are two payouts.
+  idempotency_key: z.string().uuid(),
+});
+
+const payoutListQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+});
+
+module.exports = { startTopupSchema, requestPayoutSchema, payoutListQuerySchema };

@@ -1,6 +1,6 @@
 const { Router } = require("express");
 const controller = require("./drivers.controller");
-const { validateBody } = require("../../middleware/validate");
+const { validateBody, validateQuery } = require("../../middleware/validate");
 const { authenticate, requireRole } = require("../../middleware/authenticate");
 const schemas = require("./drivers.schemas");
 const tripsController = require("../trips/trips.controller");
@@ -54,6 +54,24 @@ router.post(
   "/me/topups",
   validateBody(walletSchemas.startTopupSchema),
   walletController.startTopup,
+);
+
+// Taking money back out — the opposite direction from /me/topups above, and
+// the one that cannot be undone. Since 013 the wallet also receives the
+// driver's earnings, so the balance is money we owe: a driver who cannot
+// withdraw it has not been paid.
+//
+// The driver is always req.user.id, never a path parameter, so one driver
+// cannot cash out another's balance.
+router.post(
+  "/me/payouts",
+  validateBody(walletSchemas.requestPayoutSchema),
+  walletController.requestPayout,
+);
+router.get(
+  "/me/payouts",
+  validateQuery(walletSchemas.payoutListQuerySchema),
+  walletController.listPayouts,
 );
 
 module.exports = router;

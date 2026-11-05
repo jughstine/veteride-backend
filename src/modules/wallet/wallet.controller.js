@@ -30,4 +30,21 @@ const startTopup = asyncHandler(async (req, res) => {
   );
 });
 
-module.exports = { wallet, ledger, startTopup };
+/**
+ * Opens a cash-out. The wallet is debited the moment this answers 200 —
+ * the transfer itself happens afterwards, by hand for now.
+ *
+ * The driver comes from the token, never the body. A driver_id a caller
+ * could choose is somebody else's money.
+ */
+const requestPayout = asyncHandler(async (req, res) => {
+  res.status(201).json(await walletService.requestPayout(req.user.id, req.body));
+});
+
+const listPayouts = asyncHandler(async (req, res) => {
+  res.status(200).json(
+    await walletService.listPayouts(req.user.id, req.query.limit),
+  );
+});
+
+module.exports = { wallet, ledger, startTopup, requestPayout, listPayouts };

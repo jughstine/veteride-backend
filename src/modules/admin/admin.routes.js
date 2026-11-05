@@ -91,4 +91,32 @@ router.post(
   controller.cancelTrip,
 );
 
+// --- The cash-out queue ---
+//
+// Oldest first: a payout that has been waiting longest is the one to send
+// next. The account number is NOT masked in these replies — somebody here
+// has to type it into GCash.
+router.get(
+  "/payouts",
+  validateQuery(schemas.payoutsQuery),
+  controller.listPayouts,
+);
+
+// The money has gone. provider_ref is the transfer's own reference.
+router.post(
+  "/payouts/:payoutId/settle",
+  validateParams(schemas.payoutIdParams),
+  validateBody(schemas.payoutSettleBody),
+  controller.settlePayout,
+);
+
+// It did not go — AND THIS CREDITS THE WALLET BACK. Without that the money
+// has left the driver's view without arriving anywhere.
+router.post(
+  "/payouts/:payoutId/fail",
+  validateParams(schemas.payoutIdParams),
+  validateBody(schemas.payoutFailBody),
+  controller.failPayout,
+);
+
 module.exports = router;
