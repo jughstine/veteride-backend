@@ -62,8 +62,18 @@ const getWalletLedger = asyncHandler(async (req, res) => {
   res.status(200).json(result);
 });
 
+/**
+ * Stores the handset's push address. 200 either way — the app does not read
+ * the body, and it posts on every sign-in and every session restore.
+ */
+const savePushToken = asyncHandler(async (req, res) => {
+  await profileService.savePushToken(req.user.id, req.user.role, req.body);
+  res.status(200).json({ ok: true });
+});
+
 module.exports = {
   getMe,
+  savePushToken,
   updateMe,
   updatePreferences,
   deleteMe,

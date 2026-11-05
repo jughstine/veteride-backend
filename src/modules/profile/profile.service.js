@@ -4,6 +4,7 @@ const profileRepo = require("./repositories/profile.repository");
 const paymentMethodRepo = require("./repositories/payment-method.repository");
 const savedPlaceRepo = require("./repositories/saved-place.repository");
 const walletRepo = require("./repositories/wallet.repository");
+const deviceTokenRepo = require("./repositories/device-token.repository");
 
 // Reused from auth to avoid duplication; promote to a shared domain module if it grows.
 const userRepo = require("../auth/repositories/user.repository");
@@ -208,8 +209,35 @@ async function getWalletLedger(userId, { limit, cursor }) {
   return { items, next_cursor };
 }
 
+// ---------------------------------------------------------------------
+// POST /me/push-token
+// ---------------------------------------------------------------------
+
+/**
+ * Remembers where to reach this account's handset.
+ *
+ * NO getRequiredProfile CALL, deliberately. Every other function in this
+ * file is a rider's, and getRequiredProfile reads the rider table — a
+ * driver would get PROFILE_NOT_FOUND from it, and a driver is exactly who
+ * this route exists for. The account is already proven by the access token
+ * that got here; there is nothing further to look up.
+ */
+async function savePushToken(userId, role, { token, platform }) {
+  // device_tokens.role is ENUM('rider','driver'). An admin token would fail
+  // the insert with a 500, which is a confusing way to say "not for you".
+  if (role !== "rider" && role !== "driver") {
+    throw new AppError(
+      400,
+      "BAD_ROLE",
+      "Only riders and drivers can register a handset.",
+    );
+  }
+  await deviceTokenRepo.saveToken({ userId, role, token, platform });
+}
+
 module.exports = {
   getMe,
+  savePushToken,
   updateMe,
   updatePreferences,
   deleteMe,
