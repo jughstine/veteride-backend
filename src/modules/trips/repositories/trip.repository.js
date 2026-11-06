@@ -15,6 +15,44 @@ const TRIP_COLUMNS = `
   t.cancelled_by, t.cancel_reason,
   t.requested_at, t.matched_at, t.pickup_at, t.dropoff_at, t.updated_at`;
 
+/**
+ * The two people on a ride, as each other needs to see them.
+ *
+ * WHY THIS EXISTS. Three of the queries below read a trip that is happening
+ * now - findById, findByIdForParty and findLiveForAccount - and none of them
+ * joined `customers`. Only the offer search and the history did. So a driver
+ * learned the passenger's name from the OFFER and kept it in memory, and the
+ * moment the app restarted mid-ride the name was gone: `rider_name` came back
+ * undefined and the driver's screen fell back to "Passenger". A driver stood
+ * at the pickup with no name to ask for.
+ *
+ * The photograph had never been carried at all, in either direction.
+ *
+ * The subqueries take the LATEST profile_photo on each side, which is what
+ * uploads_slot_idx (owner_role, owner_id, kind, uploaded_at) is indexed for.
+ * `profile_photo` and nothing else: a licence or an OR/CR is a document, and
+ * no part of a ride needs one.
+ */
+const PARTY_COLUMNS = `
+  c.full_name AS rider_name,
+  (SELECT u.upload_id FROM uploads u
+    WHERE u.owner_role = 'rider' AND u.owner_id = t.user_id
+      AND u.kind = 'profile_photo' AND u.deleted_at IS NULL
+    ORDER BY u.uploaded_at DESC LIMIT 1) AS rider_photo_id,
+  (SELECT u.upload_id FROM uploads u
+    WHERE u.owner_role = 'driver' AND u.owner_id = t.driver_id
+      AND u.kind = 'profile_photo' AND u.deleted_at IS NULL
+    ORDER BY u.uploaded_at DESC LIMIT 1) AS driver_photo_id`;
+
+/**
+ * LEFT, not the inner JOIN the offer search uses.
+ *
+ * An inner join here would make a trip DISAPPEAR if its customer row were
+ * ever deleted - and the ride would still be happening, with a driver
+ * carrying somebody. Losing the name is bad; losing the whole trip is worse.
+ */
+const PARTY_JOIN = `LEFT JOIN customers c ON c.user_id = t.user_id`;
+
 /** The states a ride is still happening in. */
 const LIVE_STATUSES = ["requested", "matched", "en_route_pickup", "in_progress"];
 
@@ -74,10 +112,41 @@ async function create({
 
 async function findById(tripId) {
   const [rows] = await pool.query(
-    `SELECT ${TRIP_COLUMNS} FROM trips t WHERE t.trip_id = :tripId LIMIT 1`,
+    `SELECT ${TRIP_COLUMNS}, ${PARTY_COLUMNS}
+       FROM trips t ${PARTY_JOIN}
+      WHERE t.trip_id = :tripId LIMIT 1`,
     { tripId },
   );
   return rows[0] || null;
+}
+
+/**
+ * Have these two shared a ride recently enough to see each other's face?
+ *
+ * Asked by the uploads module, which otherwise lets nobody read anybody
+ * else's file. A passenger and the driver carrying them are the one pair
+ * for whom that rule is wrong: they are about to meet on a street, and
+ * recognising each other is the point.
+ *
+ * The window stays open for a day after the ride ends, because the rating
+ * screen and the receipt both draw the other person, and a face that
+ * vanishes the instant a ride completes takes those with it. A `requested`
+ * trip has no driver, so it cannot match.
+ */
+async function partiesSharedRide(riderId, driverId) {
+  const [rows] = await pool.query(
+    `SELECT 1 FROM trips t
+      WHERE t.user_id = :riderId AND t.driver_id = :driverId
+        AND (
+          t.status IN ('matched','en_route_pickup','in_progress')
+          OR (t.status IN ('completed','cancelled')
+              AND COALESCE(t.dropoff_at, t.updated_at, t.requested_at)
+                  > (NOW() - INTERVAL 1 DAY))
+        )
+      LIMIT 1`,
+    { riderId, driverId },
+  );
+  return rows.length > 0;
 }
 
 /**
@@ -100,7 +169,8 @@ function columnForRole(role) {
 async function findByIdForParty(tripId, accountId, role) {
   const column = columnForRole(role);
   const [rows] = await pool.query(
-    `SELECT ${TRIP_COLUMNS} FROM trips t
+    `SELECT ${TRIP_COLUMNS}, ${PARTY_COLUMNS}
+       FROM trips t ${PARTY_JOIN}
       WHERE t.trip_id = :tripId AND t.${column} = :accountId
       LIMIT 1`,
     { tripId, accountId },
@@ -112,7 +182,8 @@ async function findByIdForParty(tripId, accountId, role) {
 async function findLiveForAccount(accountId, role) {
   const column = columnForRole(role);
   const [rows] = await pool.query(
-    `SELECT ${TRIP_COLUMNS} FROM trips t
+    `SELECT ${TRIP_COLUMNS}, ${PARTY_COLUMNS}
+       FROM trips t ${PARTY_JOIN}
       WHERE t.${column} = :accountId
         AND t.status IN ('requested','matched','en_route_pickup','in_progress')
       ORDER BY t.requested_at DESC
@@ -540,6 +611,7 @@ async function partiesOf(tripId) {
 }
 
 module.exports = {
+  partiesSharedRide,
   findHistoryFor,
   availableClassesNear,
   LIVE_STATUSES,

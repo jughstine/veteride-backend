@@ -3,6 +3,7 @@ const path = require("path");
 const AppError = require("../../utils/AppError");
 const env = require("../../config/env");
 const uploadRepo = require("./repositories/upload.repository");
+const tripRepo = require("../trips/repositories/trip.repository");
 
 /**
  * Who may look at an upload.
@@ -20,12 +21,43 @@ const uploadRepo = require("./repositories/upload.repository");
  * stranger that driver 812 has a licence photo on record. A 404 tells them
  * nothing they did not already know.
  */
-function assertMayView(upload, viewer) {
+async function assertMayView(upload, viewer) {
   if (viewer.role === "admin") return;
   const mine =
     String(upload.owner_id) === String(viewer.id) &&
     upload.owner_role === viewer.role;
-  if (!mine) throw new AppError(404, "UPLOAD_NOT_FOUND", "No such upload");
+  if (mine) return;
+  if (await sharesARideWith(upload, viewer)) return;
+  throw new AppError(404, "UPLOAD_NOT_FOUND", "No such upload");
+}
+
+/**
+ * The one exception to "only your own", and it is deliberately narrow.
+ *
+ * A passenger and the driver carrying them are about to meet on a street and
+ * have to recognise each other. Nobody else gets anything, and neither of
+ * them gets anything but a face:
+ *
+ *   - kind MUST be `profile_photo`. A licence, an OR/CR, an NBI clearance
+ *     and the vehicle photographs stay owner-only for ever. This is the
+ *     check that keeps a shared ride from becoming a way to read somebody's
+ *     licence number.
+ *   - the two must be on OPPOSITE sides. Rider to rider and driver to
+ *     driver match nothing, so a driver cannot browse other drivers.
+ *   - they must actually share a ride, live or ended within a day. Someone
+ *     who has never been in that vehicle gets the same 404 as before.
+ *
+ * An admin is already past this; nothing here widens what they could see.
+ */
+async function sharesARideWith(upload, viewer) {
+  if (upload.kind !== "profile_photo") return false;
+  if (viewer.role === "rider" && upload.owner_role === "driver") {
+    return tripRepo.partiesSharedRide(viewer.id, upload.owner_id);
+  }
+  if (viewer.role === "driver" && upload.owner_role === "rider") {
+    return tripRepo.partiesSharedRide(upload.owner_id, viewer.id);
+  }
+  return false;
 }
 
 /** Only these, and the extension is derived from the type — never the name. */
@@ -125,7 +157,7 @@ async function store(viewer, file, kind) {
 async function read(uploadId, viewer) {
   const row = await uploadRepo.findAny(uploadId);
   if (!row) throw new AppError(404, "UPLOAD_NOT_FOUND", "No such upload");
-  assertMayView(row, viewer);
+  await assertMayView(row, viewer);
   return toView(row);
 }
 
@@ -133,7 +165,7 @@ async function read(uploadId, viewer) {
 async function readFile(uploadId, viewer) {
   const row = await uploadRepo.findAny(uploadId);
   if (!row) throw new AppError(404, "UPLOAD_NOT_FOUND", "No such upload");
-  assertMayView(row, viewer);
+  await assertMayView(row, viewer);
 
   // Resolved and then checked to be inside the directory. stored_name is
   // generated, so this cannot currently escape — but a path built from the

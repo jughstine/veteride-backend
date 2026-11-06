@@ -83,9 +83,30 @@ function toView(
     rated_at: row.rated_at ?? null,
 
     rider_name: row.rider_name ?? null,
+
+    // The passenger, as the DRIVER needs to see them. `rider_name` above is
+    // kept beside it: it is what every existing screen reads, and removing a
+    // field to tidy up is how a working app stops working.
+    //
+    // The URL is this server's own path, not an absolute one. The app
+    // refuses a photo URL pointing at any other host - a field in a payload
+    // is data, not an instruction about where to send a bearer token.
+    rider: {
+      name: row.rider_name ?? null,
+      photo_url: row.rider_photo_id
+        ? `/uploads/${row.rider_photo_id}/file`
+        : null,
+    },
+
     driver: driver
       ? {
           name: driver.full_name,
+          // The face the passenger sees. Null until that driver has set one,
+          // and the app draws initials for null - which is what every ride
+          // before this change looked like.
+          photo_url: row.driver_photo_id
+            ? `/uploads/${row.driver_photo_id}/file`
+            : null,
           // The column is `phone_number`; `driver.phone` was undefined, so
           // the key vanished from the JSON entirely and the passenger's
           // driver card had no number to call.
