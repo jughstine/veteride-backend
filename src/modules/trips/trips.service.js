@@ -111,6 +111,19 @@ function toView(
           // the key vanished from the JSON entirely and the passenger's
           // driver card had no number to call.
           phone: driver.phone_number ?? null,
+
+          // What is actually coming. Both named the way the app already
+          // reads them from the other server, so nothing on that side has
+          // to learn a new shape:
+          //
+          //   vehicle  "Honda Click 160"   - what a person scans for
+          //   plate    "TST 0001"          - what confirms it
+          //
+          // Null where the ride has no vehicle on file, and the app shows
+          // nothing rather than an empty separator.
+          vehicle: row.vehicle_model ?? null,
+          plate: row.vehicle_plate ?? null,
+          colour: row.vehicle_color ?? null,
           // The average of what this driver's own passengers gave them,
           // and the stored column only where there is nothing to average
           // yet — a driver on their first ride has whatever the console

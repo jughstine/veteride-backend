@@ -42,7 +42,19 @@ const PARTY_COLUMNS = `
   (SELECT u.upload_id FROM uploads u
     WHERE u.owner_role = 'driver' AND u.owner_id = t.driver_id
       AND u.kind = 'profile_photo' AND u.deleted_at IS NULL
-    ORDER BY u.uploaded_at DESC LIMIT 1) AS driver_photo_id`;
+    ORDER BY u.uploaded_at DESC LIMIT 1) AS driver_photo_id,
+
+  -- The vehicle the passenger is standing on a kerb looking for. The plate
+  -- is the only thing that tells two identical motorcycles apart, and the
+  -- model is what a person actually scans for first - "a red Click 160"
+  -- finds a bike faster than a plate does, and the plate confirms it.
+  --
+  -- Off trips.vehicle_id, which is the vehicle THIS RIDE was taken on, not
+  -- whatever the driver happens to own today: a receipt from March must
+  -- still name the vehicle that did the trip.
+  v.plate_number  AS vehicle_plate,
+  v.vehicle_model AS vehicle_model,
+  v.vehicle_color AS vehicle_color`;
 
 /**
  * LEFT, not the inner JOIN the offer search uses.
@@ -51,7 +63,9 @@ const PARTY_COLUMNS = `
  * ever deleted - and the ride would still be happening, with a driver
  * carrying somebody. Losing the name is bad; losing the whole trip is worse.
  */
-const PARTY_JOIN = `LEFT JOIN customers c ON c.user_id = t.user_id`;
+const PARTY_JOIN = `
+  LEFT JOIN customers c ON c.user_id = t.user_id
+  LEFT JOIN vehicles  v ON v.vehicle_id = t.vehicle_id`;
 
 /** The states a ride is still happening in. */
 const LIVE_STATUSES = ["requested", "matched", "en_route_pickup", "in_progress"];
