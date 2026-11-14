@@ -1,6 +1,10 @@
 const driverService = require("./drivers.service");
 const asyncHandler = require("../../utils/asyncHandler");
 
+const me = asyncHandler(async (req, res) => {
+  res.status(200).json(await driverService.readMe(req.user.id));
+});
+
 const submitVerificationDocuments = asyncHandler(async (req, res) => {
   const driver = await driverService.submitVerificationDocuments(req.user.id, {
     dateOfBirth: req.body.date_of_birth,
@@ -24,4 +28,4 @@ const earnings = asyncHandler(async (req, res) => {
   res.status(200).json({ earnings: await driverService.earnings(req.user.id) });
 });
 
-module.exports = { submitVerificationDocuments, setAvailability, earnings };
+module.exports = { me, submitVerificationDocuments, setAvailability, earnings };
