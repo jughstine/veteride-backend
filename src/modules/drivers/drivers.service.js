@@ -2,6 +2,7 @@ const AppError = require("../../utils/AppError");
 const env = require("../../config/env");
 const userRepo = require("../auth/repositories/user.repository");
 const availabilityRepo = require("./repositories/availability.repository");
+const vehicleRepo = require("./repositories/vehicle.repository");
 const earningsRepo = require("./repositories/earnings.repository");
 const tripService = require("../trips/trips.service");
 
@@ -17,6 +18,48 @@ async function loadDriver(driverId) {
     throw new AppError(404, "PROFILE_NOT_FOUND", "Driver profile not found");
   }
   return driver;
+}
+
+/**
+ * GET /drivers/me — this driver's own row, as it stands now.
+ *
+ * WHY THIS EXISTS. A driver had no self-read on this server at all: `/me`
+ * is requireRole("rider") and answers them 403, and there was nothing
+ * under /drivers that returned the driver. So a driver app's copy of its
+ * own account was frozen at the last sign-in, and the app says so in its
+ * own source: "a driver gets SignInFailure.noSelfRead and the caller keeps
+ * the account it has". Everything an office does to a driver after they
+ * signed in - approving their documents, adding their vehicle, changing
+ * their class - reached that handset only if the driver happened to sign
+ * out and in again.
+ *
+ * The visible symptom was the My vehicle screen. The office had put a
+ * Honda Click 160 on the account and the trip view has carried it to the
+ * PASSENGER since #27, while the driver's own screen read "No vehicle on
+ * file" - the one person who could not see their own motorcycle was the
+ * person riding it.
+ *
+ * SHAPE. The driver's columns flat, exactly as POST /auth/login already
+ * returns them under `user`, so the app can hand this to the same parser
+ * and not grow a second one. `availability_status` and `vehicle` are the
+ * two things that are NOT columns on `drivers` and had no way out before.
+ *
+ * `vehicle` is the one vehicleRepo.findForDriver picks - the same row
+ * dispatch classifies this driver by, so the screen cannot name a
+ * motorcycle the offer list does not agree with. Null where the office has
+ * not added one yet, which is a real state and not an error.
+ */
+async function readMe(driverId) {
+  const driver = await loadDriver(driverId);
+  const [availability, vehicle] = await Promise.all([
+    availabilityRepo.statusOf(driverId),
+    vehicleRepo.findForDriver(driverId),
+  ]);
+  return {
+    ...stripSensitive(driver),
+    availability_status: availability,
+    vehicle: vehicle ?? null,
+  };
 }
 
 // POST /drivers/me/verification-documents
@@ -193,4 +236,4 @@ async function earnings(driverId) {
   return { today: todayTotals, week: { ...week, days } };
 }
 
-module.exports = { submitVerificationDocuments, setAvailability, earnings };
+module.exports = { readMe, submitVerificationDocuments, setAvailability, earnings };

@@ -13,6 +13,12 @@ const router = Router();
 // All routes require a logged-in driver; these actions occur after signup.
 router.use(authenticate, requireRole("driver"));
 
+// This driver's own row. Before the /me/* routes below only for the
+// reading of it: Express matches "/me" and "/me/wallet" as distinct paths
+// and neither shadows the other, so the order here is for a person
+// reading the file.
+router.get("/me", controller.me);
+
 router.post(
   "/me/verification-documents",
   validateBody(schemas.submitVerificationDocumentsSchema),
